@@ -46,6 +46,31 @@ namespace {
         return *sources;
     }
 
+    [[nodiscard]] RE::BGSBipedObjectForm::BipedObjectSlot GetArmorSlotMask(
+        const RE::TESObjectARMO& a_source,
+        const DisplaySlot a_channel
+    ) {
+        auto slotMask = a_source.GetSlotMask();
+        const auto hadRingSlot = slotMask.all(RE::BGSBipedObjectForm::BipedObjectSlot::kRing);
+        slotMask.reset(RE::BGSBipedObjectForm::BipedObjectSlot::kRing);
+        if (hadRingSlot) {
+            slotMask.set(Slots::GetArmorSlot(a_channel));
+        }
+        return *slotMask;
+    }
+
+    [[nodiscard]] RE::BGSBipedObjectForm::BipedObjectSlot GetAddonSlotMask(
+        const RE::TESObjectARMA& a_source,
+        const DisplaySlot a_channel
+    ) {
+        auto slotMask = a_source.GetSlotMask();
+        if (slotMask == RE::BGSBipedObjectForm::BipedObjectSlot::kRing) {
+            slotMask.reset(RE::BGSBipedObjectForm::BipedObjectSlot::kRing);
+            slotMask.set(Slots::GetArmorSlot(a_channel));
+        }
+        return *slotMask;
+    }
+
     template <class T>
     [[nodiscard]] T* DuplicateForm(T& a_source, std::string_view a_kind) {
         auto* duplicateForm = a_source.CreateDuplicateForm(true, nullptr);
@@ -110,15 +135,15 @@ bool RegisterForm(RE::TESForm& a_form, const std::string_view a_kind, const RE::
     return true;
 }
 
-void ConfigureArmor(RE::TESObjectARMO& a_armor, const DisplaySlot a_channel) {
-    a_armor.SetSlotMask(Slots::GetArmorSlot(a_channel));
+void ConfigureArmor(const RE::TESObjectARMO& a_source, RE::TESObjectARMO& a_armor, const DisplaySlot a_channel) {
+    a_armor.SetSlotMask(GetArmorSlotMask(a_source, a_channel));
     a_armor.formFlags |= RE::TESObjectARMO::RecordFlags::kNonPlayable;
     a_armor.value = 0;
     a_armor.weight = 0.0F;
 }
 
-void ConfigureAddon(RE::TESObjectARMA& a_addon, const DisplaySlot a_channel) {
-    a_addon.SetSlotMask(Slots::GetArmorSlot(a_channel));
+void ConfigureAddon(const RE::TESObjectARMA& a_source, RE::TESObjectARMA& a_addon, const DisplaySlot a_channel) {
+    a_addon.SetSlotMask(GetAddonSlotMask(a_source, a_channel));
 }
 
 void CopyRaceCoverage(const RE::TESObjectARMA& a_sourceAddon, RE::TESObjectARMA& a_clonedAddon) {

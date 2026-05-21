@@ -25,8 +25,16 @@ struct CloneRecord {
 [[nodiscard]] RE::TESObjectARMO* DuplicateArmor(RE::TESObjectARMO& a_source);
 [[nodiscard]] RE::TESObjectARMA* DuplicateAddon(RE::TESObjectARMA& a_source);
 [[nodiscard]] bool RegisterForm(RE::TESForm& a_form, std::string_view a_kind, RE::FormID a_sourceFormID);
-void ConfigureArmor(RE::TESObjectARMO& a_armor, DisplaySlot a_channel = DisplaySlot::kRegular);
-void ConfigureAddon(RE::TESObjectARMA& a_addon, DisplaySlot a_channel = DisplaySlot::kRegular);
+void ConfigureArmor(
+    const RE::TESObjectARMO& a_source,
+    RE::TESObjectARMO& a_armor,
+    DisplaySlot a_channel = DisplaySlot::kRegular
+);
+void ConfigureAddon(
+    const RE::TESObjectARMA& a_source,
+    RE::TESObjectARMA& a_addon,
+    DisplaySlot a_channel = DisplaySlot::kRegular
+);
 void CopyRaceCoverage(const RE::TESObjectARMA& a_sourceAddon, RE::TESObjectARMA& a_clonedAddon);
 void Register(const CloneRecord& a_record);
 void RequireRestore(DisplaySlot a_channel, RE::FormID a_sourceArmorFormID);

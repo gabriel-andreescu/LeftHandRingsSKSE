@@ -7,6 +7,7 @@
 #include "Settings.h"
 #include "Slots.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <mutex>
@@ -73,6 +74,10 @@ struct ChannelState {
 std::mutex g_lock;
 bool g_refreshPending {false};
 bool g_refreshRunning {false};
+
+[[nodiscard]] bool IsFingerRingVisualAddon(const RE::TESObjectARMA& a_addon) {
+    return a_addon.GetSlotMask() == RE::BGSBipedObjectForm::BipedObjectSlot::kRing;
+}
 
 void RefreshOnce();
 void RefreshChannel(DisplaySlot a_channel, ChannelState& a_state);
@@ -169,7 +174,8 @@ void EquipRuntimeArmorObject(
     RE::ExtraDataList* a_extraList
 );
 RuntimeArmor* FailLoadedRestore(DisplaySlot a_channel, RE::FormID a_originalFormID, std::string_view a_reason);
-[[nodiscard]] bool IsArmorEquipped(RE::Actor& a_actor, DisplaySlot a_channel, const RuntimeArmor& a_runtimeArmor);
+[[nodiscard]] bool IsArmorWorn(RE::Actor& a_actor, const RE::TESObjectARMO& a_armor);
+[[nodiscard]] bool IsArmorWorn(RE::Actor& a_actor, const RuntimeArmor& a_runtimeArmor);
 void UnequipActive(RE::Actor& a_actor, ChannelState& a_state);
 [[nodiscard]] bool EquippedSelectionMatches(const ChannelState& a_state, const Selection::State& a_selection);
 void RecordEquippedSelection(ChannelState& a_state, const Selection::State& a_selection);
@@ -254,24 +260,32 @@ void ApplyRuntimeAddonDummyModels(RE::TESObjectARMA& a_clonedAddon, const Runtim
     return metadata;
 }
 
-struct RuntimeAddonClone {
+struct RuntimeAddonEntry {
     RE::TESObjectARMA* sourceAddon {nullptr};
-    RE::TESObjectARMA* runtimeAddon {nullptr};
-    RuntimeEquipment::AddonModel metadata;
+    RE::TESObjectARMA* attachedAddon {nullptr};
+    std::optional<RuntimeEquipment::AddonModel> metadata;
 };
 
-[[nodiscard]] std::optional<RuntimeAddonClone> CreateRuntimeAddonClone(
+[[nodiscard]] std::optional<RuntimeAddonEntry> CreateRuntimeAddonEntry(
     RE::TESObjectARMA& a_sourceAddon,
     const RE::FormID a_sourceArmorFormID,
     const DisplaySlot a_channel
 ) {
+    if (!IsFingerRingVisualAddon(a_sourceAddon)) {
+        return RuntimeAddonEntry {
+            .sourceAddon = std::addressof(a_sourceAddon),
+            .attachedAddon = std::addressof(a_sourceAddon),
+        };
+    }
+
     auto* runtimeAddon = RuntimeClones::DuplicateAddon(a_sourceAddon);
     if (!runtimeAddon) {
         return std::nullopt;
     }
 
-    RuntimeClones::ConfigureAddon(*runtimeAddon, a_channel);
+    RuntimeClones::ConfigureAddon(a_sourceAddon, *runtimeAddon, a_channel);
     RuntimeClones::CopyRaceCoverage(a_sourceAddon, *runtimeAddon);
+
     auto metadata = PrepareAddonModels(a_sourceAddon, *runtimeAddon, a_channel);
     if (!metadata) {
         return std::nullopt;
@@ -281,10 +295,10 @@ struct RuntimeAddonClone {
         return std::nullopt;
     }
 
-    return RuntimeAddonClone {
+    return RuntimeAddonEntry {
         .sourceAddon = std::addressof(a_sourceAddon),
-        .runtimeAddon = runtimeAddon,
-        .metadata = std::move(*metadata),
+        .attachedAddon = runtimeAddon,
+        .metadata = std::move(metadata),
     };
 }
 
@@ -599,7 +613,7 @@ void RefreshChannel(const DisplaySlot a_channel, ChannelState& a_state) {
         return;
     }
 
-    if (!IsArmorEquipped(*player, a_channel, *runtimeArmor)) {
+    if (!IsArmorWorn(*player, *runtimeArmor)) {
         if (!EquipRuntimeArmor(*player, a_channel, a_state, *runtimeArmor, selection)) {
             logger::warn(
                 "RuntimeEquipment: runtime armor re-equip failed | source={:08X}",
@@ -643,6 +657,22 @@ void RuntimeEquipment::Clear(const DisplaySlot a_channel) {
         ClearEquippedSelection(state);
         state.equippedArmorRestoredFromSave = false;
     }
+}
+
+std::optional<RE::FormID> RuntimeEquipment::SyncAfterEquip(RE::Actor& a_actor, const DisplaySlot a_channel) {
+    auto& state = ChannelStates()[ToIndex(a_channel)];
+    if (!state.equippedArmor || state.equippedOriginalFormID == 0) {
+        return std::nullopt;
+    }
+
+    if (IsArmorWorn(a_actor, *state.equippedArmor)) {
+        return std::nullopt;
+    }
+
+    const auto sourceFormID = state.equippedOriginalFormID;
+    Selection::Clear(a_channel);
+    UnequipActive(a_actor, state);
+    return sourceFormID;
 }
 
 void RuntimeEquipment::DiscardState(const DisplaySlot a_channel) {
@@ -693,7 +723,7 @@ bool RuntimeEquipment::IsAddon(const RE::TESObjectARMO* a_armor, const RE::TESOb
                 continue;
             }
 
-            return runtimeArmor.addonModels.contains(const_cast<RE::TESObjectARMA*>(a_addon));
+            return std::ranges::contains(runtimeArmor.addons, const_cast<RE::TESObjectARMA*>(a_addon));
         }
     }
 
@@ -750,7 +780,7 @@ RuntimeArmor* EnsureRuntimeArmor(const DisplaySlot a_channel, ChannelState& a_st
         return nullptr;
     }
 
-    RuntimeClones::ConfigureArmor(*clonedArmor, a_channel);
+    RuntimeClones::ConfigureArmor(a_ring, *clonedArmor, a_channel);
     SyncRuntimeArmorMetadata(a_ring, *clonedArmor);
     clonedArmor->armorAddons.clear();
 
@@ -768,15 +798,17 @@ RuntimeArmor* EnsureRuntimeArmor(const DisplaySlot a_channel, ChannelState& a_st
             continue;
         }
 
-        auto runtimeAddon = CreateRuntimeAddonClone(*sourceAddon, originalFormID, a_channel);
-        if (!runtimeAddon) {
+        auto addonEntry = CreateRuntimeAddonEntry(*sourceAddon, originalFormID, a_channel);
+        if (!addonEntry) {
             continue;
         }
 
-        runtimeArmor.addons.push_back(runtimeAddon->runtimeAddon);
-        runtimeArmor.addonModels.emplace(runtimeAddon->runtimeAddon, std::move(runtimeAddon->metadata));
-        clonedArmor->armorAddons.push_back(runtimeAddon->runtimeAddon);
-        cloneRecord.sourceAddonFormIDs.push_back(runtimeAddon->sourceAddon->GetFormID());
+        runtimeArmor.addons.push_back(addonEntry->attachedAddon);
+        if (addonEntry->metadata) {
+            runtimeArmor.addonModels.emplace(addonEntry->attachedAddon, std::move(*addonEntry->metadata));
+        }
+        clonedArmor->armorAddons.push_back(addonEntry->attachedAddon);
+        cloneRecord.sourceAddonFormIDs.push_back(addonEntry->sourceAddon->GetFormID());
     }
 
     if (runtimeArmor.addons.empty()) {
@@ -866,33 +898,35 @@ std::optional<RuntimeArmor> RestoreLoadedRuntimeArmor(
         .cloneArmorFormID = clone->GetFormID(),
     };
 
-    std::vector<RuntimeAddonClone> runtimeAddons;
-    runtimeAddons.reserve(sourceAddons->size());
+    std::vector<RuntimeAddonEntry> addonEntries;
+    addonEntries.reserve(sourceAddons->size());
     for (auto* sourceAddon : *sourceAddons) {
         if (!sourceAddon) {
             return std::nullopt;
         }
 
-        auto runtimeAddon = CreateRuntimeAddonClone(*sourceAddon, originalFormID, a_channel);
-        if (!runtimeAddon) {
+        auto addonEntry = CreateRuntimeAddonEntry(*sourceAddon, originalFormID, a_channel);
+        if (!addonEntry) {
             return std::nullopt;
         }
 
-        runtimeAddons.push_back(std::move(*runtimeAddon));
+        addonEntries.push_back(std::move(*addonEntry));
     }
 
-    if (runtimeAddons.empty()) {
+    if (addonEntries.empty()) {
         return std::nullopt;
     }
 
-    RuntimeClones::ConfigureArmor(*clone, a_channel);
+    RuntimeClones::ConfigureArmor(a_ring, *clone, a_channel);
     clone->armorAddons.clear();
 
-    for (auto& runtimeAddon : runtimeAddons) {
-        runtimeArmor.addons.push_back(runtimeAddon.runtimeAddon);
-        runtimeArmor.addonModels.emplace(runtimeAddon.runtimeAddon, std::move(runtimeAddon.metadata));
-        clone->armorAddons.push_back(runtimeAddon.runtimeAddon);
-        refreshedRecord.sourceAddonFormIDs.push_back(runtimeAddon.sourceAddon->GetFormID());
+    for (auto& addonEntry : addonEntries) {
+        runtimeArmor.addons.push_back(addonEntry.attachedAddon);
+        if (addonEntry.metadata) {
+            runtimeArmor.addonModels.emplace(addonEntry.attachedAddon, std::move(*addonEntry.metadata));
+        }
+        clone->armorAddons.push_back(addonEntry.attachedAddon);
+        refreshedRecord.sourceAddonFormIDs.push_back(addonEntry.sourceAddon->GetFormID());
     }
 
     if (!IsLeftRuntimeArmor(*clone, a_channel)) {
@@ -1002,7 +1036,7 @@ bool AdoptAlreadyEquippedRestoredArmor(
     a_state.equippedArmor = a_runtimeArmor.armor;
     a_state.equippedArmorRestoredFromSave = true;
 
-    return IsArmorEquipped(a_actor, a_channel, a_runtimeArmor);
+    return IsArmorWorn(a_actor, a_runtimeArmor);
 }
 
 bool EnsureRuntimeArmorInventory(RE::Actor& a_actor, RuntimeArmor& a_runtimeArmor) {
@@ -1246,7 +1280,7 @@ bool ReapplyEquippedEnchantmentPower(RE::Actor& a_actor, const DisplaySlot a_cha
     }
 
     auto& runtimeArmor = runtimeIt->second;
-    if (!IsArmorEquipped(a_actor, a_channel, runtimeArmor)) {
+    if (!IsArmorWorn(a_actor, runtimeArmor)) {
         return true;
     }
 
@@ -1281,7 +1315,7 @@ std::optional<bool> TryAdoptEquippedRestoredRuntimeArmor(
     RE::ExtraDataList* a_extraList,
     const EnchantmentPowerState& a_enchantmentPowerState
 ) {
-    if (!a_runtimeArmor.restoredFromSave || !IsArmorEquipped(a_actor, a_channel, a_runtimeArmor)) {
+    if (!a_runtimeArmor.restoredFromSave || !IsArmorWorn(a_actor, a_runtimeArmor)) {
         return std::nullopt;
     }
 
@@ -1447,7 +1481,7 @@ bool EquipRuntimeArmor(
     entry = Inventory::FindEntry(a_actor, *a_runtimeArmor.armor);
     a_state.equippedExtraList = FindExtraList(entry, extraList);
 
-    const auto equipped = IsArmorEquipped(a_actor, a_channel, a_runtimeArmor);
+    const auto equipped = IsArmorWorn(a_actor, a_runtimeArmor);
     if (!equipped && !a_deferWornCheck) {
         return false;
     }
@@ -1468,12 +1502,24 @@ bool EquipRuntimeArmor(
     return hasBipedPart;
 }
 
-bool IsArmorEquipped(RE::Actor& a_actor, const DisplaySlot a_channel, const RuntimeArmor& a_runtimeArmor) {
+bool IsArmorWorn(RE::Actor& a_actor, const RE::TESObjectARMO& a_armor) {
+    const auto slotMask = a_armor.GetSlotMask();
+    for (auto index = std::uint32_t {0}; index < RE::BIPED_OBJECTS::kEditorTotal; ++index) {
+        const auto slot = Slots::ToArmorSlot(static_cast<RE::BIPED_OBJECTS::BIPED_OBJECT>(index));
+        if (slotMask.all(slot) && a_actor.GetWornArmor(slot) == std::addressof(a_armor)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool IsArmorWorn(RE::Actor& a_actor, const RuntimeArmor& a_runtimeArmor) {
     if (!a_runtimeArmor.armor) {
         return false;
     }
 
-    return a_actor.GetWornArmor(Slots::GetArmorSlot(a_channel)) == a_runtimeArmor.armor;
+    return IsArmorWorn(a_actor, *a_runtimeArmor.armor);
 }
 
 bool EquippedSelectionMatches(const ChannelState& a_state, const Selection::State& a_selection) {

@@ -90,6 +90,24 @@ namespace {
         UI::RefreshRows();
     }
 
+    void SyncAfterEquip(RE::Actor& a_actor) {
+        auto refreshed = false;
+        for (const auto channel : kDisplaySlots) {
+            const auto sourceFormID = RuntimeEquipment::SyncAfterEquip(a_actor, channel);
+            if (!sourceFormID) {
+                continue;
+            }
+
+            auto* sourceRing = RE::TESForm::LookupByID<RE::TESObjectARMO>(*sourceFormID);
+            RE::SendUIMessage::SendInventoryUpdateMessage(std::addressof(a_actor), sourceRing);
+            refreshed = true;
+        }
+
+        if (refreshed) {
+            UI::RefreshRows();
+        }
+    }
+
     struct EquipObjectHook {
         static void thunk(
             RE::ActorEquipManager* a_equipManager,
@@ -103,6 +121,8 @@ namespace {
             }
 
             auto leftSlotReplacement = AsLeftSlotArmor(a_object);
+            auto* armor = a_object ? a_object->As<RE::TESObjectARMO>() : nullptr;
+            const auto isRuntimeArmor = RuntimeEquipment::IsArmor(armor);
             auto* ring = Inventory::AsRing(a_object);
             if (!ring) {
                 func(a_equipManager, a_actor, a_object, a_params);
@@ -112,6 +132,9 @@ namespace {
                         *leftSlotReplacement->armor,
                         leftSlotReplacement->channel
                     );
+                }
+                if (!isRuntimeArmor) {
+                    SyncAfterEquip(*a_actor);
                 }
                 return;
             }
@@ -125,6 +148,7 @@ namespace {
                 ClearVirtualLeftSlotForReplacement(*a_actor, *leftSlotReplacement->armor, leftSlotReplacement->channel);
             }
 
+            SyncAfterEquip(*a_actor);
             UI::RefreshEquipmentSoon(ring->GetFormID());
         }
 

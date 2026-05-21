@@ -64,7 +64,9 @@ Optional MCM addon:
 
 The mod was designed to avoid conflicts, if however you find any compatibility issues, please report them and I'll see what I can do.
 
-It is compatible with [url=https://www.nexusmods.com/skyrimspecialedition/mods/3240]Left Hand Rings Modified SE[/url] and most of the ring related mods I could find, but I do not see why one would use both.
+[list]
+[*]Compatible with [url=https://www.nexusmods.com/skyrimspecialedition/mods/104215]The New Gentleman[/url] 4.1.0+. Versions older than that can crash with this mod.[/*]
+[/list]
 
 
 [size=4][color=#00ffff]TODO[/color][/size]

@@ -25,6 +25,7 @@ struct AddonModel {
 void RequestRefresh();
 void Refresh();
 void Clear(DisplaySlot a_channel = DisplaySlot::kRegular);
+[[nodiscard]] std::optional<RE::FormID> SyncAfterEquip(RE::Actor& a_actor, DisplaySlot a_channel);
 void DiscardState(DisplaySlot a_channel);
 void DiscardState();
 [[nodiscard]] bool IsArmor(const RE::TESObjectARMO* a_armor);
