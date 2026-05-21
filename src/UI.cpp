@@ -12,7 +12,6 @@
 
 namespace UI {
 namespace {
-    constexpr std::uint32_t kMouseRightButton = 1;
     constexpr auto kSkyUIEquipStateNone = 0;
     constexpr auto kSkyUIEquipStateLeft = 2;
     constexpr auto kSkyUIEquipStateRight = 3;
@@ -814,7 +813,7 @@ namespace {
         return true;
     }
 
-    bool SelectForLeftHandImpl(RE::InventoryEntryData* a_entry) {
+    bool SelectEntryForLeftHandImpl(RE::InventoryEntryData* a_entry) {
         if (!a_entry) {
             return false;
         }
@@ -850,7 +849,7 @@ namespace {
         return BuildSelectionFromScaleformEntry(selectedEntry);
     }
 
-    [[nodiscard]] bool HandleRightClickImpl() {
+    [[nodiscard]] bool SelectInventoryEntryForLeftHandImpl() {
         auto request = GetSelectedInventorySelection();
         if (!request) {
             return false;
@@ -862,53 +861,6 @@ namespace {
 
         return ToggleRingForLeftHand(*request);
     }
-
-    class InputEventSink : public RE::BSTEventSink<RE::InputEvent*> {
-    public:
-        static InputEventSink* GetSingleton() {
-            static InputEventSink sink;
-            return std::addressof(sink);
-        }
-
-        RE::BSEventNotifyControl ProcessEvent(
-            RE::InputEvent* const* a_event,
-            [[maybe_unused]] RE::BSTEventSource<RE::InputEvent*>* a_eventSource
-        ) override {
-            if (!a_event || !*a_event) {
-                return RE::BSEventNotifyControl::kContinue;
-            }
-
-            for (auto* event = *a_event; event; event = event->next) {
-                if (!IsRightMouseDown(*event)) {
-                    continue;
-                }
-
-                auto* ui = RE::UI::GetSingleton();
-                if (!ui) {
-                    continue;
-                }
-
-                if (ui->IsMenuOpen(RE::FavoritesMenu::MENU_NAME)) {
-                    pendingFavoritesRightClick_.store(true);
-                    stl::add_thread_task(
-                        [] {
-                            GetSingleton()->pendingFavoritesRightClick_.store(false);
-                        },
-                        750ms
-                    );
-                }
-            }
-
-            return RE::BSEventNotifyControl::kContinue;
-        }
-
-        [[nodiscard]] bool ConsumeFavoritesRightClick() {
-            return pendingFavoritesRightClick_.exchange(false);
-        }
-
-    private:
-        std::atomic_bool pendingFavoritesRightClick_ {false};
-    };
 
     class MenuEventSink : public RE::BSTEventSink<RE::MenuOpenCloseEvent> {
     public:
@@ -945,14 +897,7 @@ namespace {
 
 }
 
-void InstallSinks() {
-    if (auto* inputManager = RE::BSInputDeviceManager::GetSingleton()) {
-        inputManager->AddEventSink(InputEventSink::GetSingleton());
-        logger::info("UI: input event sink installed");
-    } else {
-        logger::warn("UI: input event sink skipped | reason=noInputDeviceManager");
-    }
-
+void InstallMenuEventSink() {
     if (auto* ui = RE::UI::GetSingleton()) {
         ui->AddEventSink(MenuEventSink::GetSingleton());
         logger::info("UI: menu event sink installed");
@@ -970,26 +915,18 @@ void RegisterInventoryData() {
     }
 }
 
-bool IsRightMouseDown(RE::InputEvent& a_event) {
+bool IsInventoryLeftEquipDown(RE::InputEvent& a_event) {
     const auto* button = a_event.AsButtonEvent();
-    return button
-           && button->GetDevice()
-           == RE::INPUT_DEVICE::kMouse
-           && button->GetIDCode()
-           == kMouseRightButton
-           && button->IsDown();
+    const auto* userEvents = RE::UserEvents::GetSingleton();
+    return button && button->IsDown() && userEvents && button->GetUserEvent() == userEvents->leftEquip;
 }
 
-bool SelectForLeftHand(RE::InventoryEntryData* a_entry) {
-    return SelectForLeftHandImpl(a_entry);
+bool SelectInventoryEntryForLeftHand() {
+    return SelectInventoryEntryForLeftHandImpl();
 }
 
-bool HandleRightClick() {
-    return HandleRightClickImpl();
-}
-
-bool ConsumeFavoritesRightClick() {
-    return InputEventSink::GetSingleton()->ConsumeFavoritesRightClick();
+bool SelectEntryForLeftHand(RE::InventoryEntryData* a_entry) {
+    return SelectEntryForLeftHandImpl(a_entry);
 }
 
 void RefreshRows() {

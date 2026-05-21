@@ -17,6 +17,27 @@
 
 namespace Hooks {
 namespace {
+    constexpr RE::FormID kRightHandEquipSlotFormID = 0x00013F42;
+    constexpr RE::FormID kLeftHandEquipSlotFormID = 0x00013F43;
+
+    enum class HandEquipSlot {
+        kOther,
+        kRight,
+        kLeft,
+    };
+
+    [[nodiscard]] HandEquipSlot GetHandEquipSlot(const RE::BGSEquipSlot* a_slot) {
+        if (!a_slot) {
+            return HandEquipSlot::kOther;
+        }
+
+        switch (a_slot->GetFormID()) {
+            case kRightHandEquipSlotFormID: return HandEquipSlot::kRight;
+            case kLeftHandEquipSlotFormID:  return HandEquipSlot::kLeft;
+            default:                        return HandEquipSlot::kOther;
+        }
+    }
+
     struct ActiveEffectSetEffectivenessHook {
         static void thunk(RE::ActiveEffect* a_effect, float a_power, bool a_onlyHostile) {
             func(a_effect, a_power, a_onlyHostile);
@@ -295,7 +316,7 @@ namespace {
         logger::info("Papyrus: event hook installed | event=SendEvent");
     }
 
-    struct MenuControlsRightClickHook {
+    struct InventoryLeftEquipHook {
         static RE::BSEventNotifyControl thunk(
             RE::MenuControls* a_menuControls,
             RE::InputEvent* const* a_event,
@@ -307,7 +328,7 @@ namespace {
 
                 if (inventoryOpen) {
                     for (auto* event = *a_event; event; event = event->next) {
-                        if (UI::IsRightMouseDown(*event) && UI::HandleRightClick()) {
+                        if (UI::IsInventoryLeftEquipDown(*event) && UI::SelectInventoryEntryForLeftHand()) {
                             return RE::BSEventNotifyControl::kStop;
                         }
                     }
@@ -323,9 +344,9 @@ namespace {
     void InstallMenuControlsHook() {
 #ifndef __clang_analyzer__
         REL::Relocation<std::uintptr_t> menuControlsVTable {RE::VTABLE_MenuControls[0]};
-        MenuControlsRightClickHook::func = menuControlsVTable.write_vfunc(0x1, MenuControlsRightClickHook::thunk);
+        InventoryLeftEquipHook::func = menuControlsVTable.write_vfunc(0x1, InventoryLeftEquipHook::thunk);
 #endif
-        logger::info("UI: InventoryMenu right-click hook installed");
+        logger::info("UI: InventoryMenu left-equip hook installed");
     }
 
     struct FavoritesUseQuickslotItemHook {
@@ -336,10 +357,12 @@ namespace {
             RE::BGSEquipSlot* a_slot,
             bool a_queueEquip
         ) {
-            if (a_actor && a_actor->IsPlayerRef() && UI::ConsumeFavoritesRightClick()) {
-                if (UI::SelectForLeftHand(a_entry)) {
-                    return;
-                }
+            if (a_actor
+                && a_actor->IsPlayerRef()
+                && GetHandEquipSlot(a_slot)
+                == HandEquipSlot::kLeft
+                && UI::SelectEntryForLeftHand(a_entry)) {
+                return;
             }
 
             func(a_equipManager, a_actor, a_entry, a_slot, a_queueEquip);
@@ -349,7 +372,7 @@ namespace {
     };
 
     void InstallUIHooks() {
-        UI::InstallSinks();
+        UI::InstallMenuEventSink();
         InstallMenuControlsHook();
         UI::RegisterInventoryData();
 
