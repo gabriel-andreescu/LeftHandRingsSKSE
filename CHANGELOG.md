@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1 - Unreleased
+
+- fix: use unique inventory identity for player-enchanted left-hand rings
+
 ## 0.2.0 - 2026-05-22
 
 - feat: add controller support

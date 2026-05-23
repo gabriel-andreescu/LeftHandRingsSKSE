@@ -12,13 +12,25 @@ namespace Serialization {
 namespace {
     constexpr auto kSerializationID = MakeRecordType('L', 'H', 'R', 'S');
     constexpr auto kRecordState = MakeRecordType('S', 'T', 'A', 'T');
-    constexpr std::uint32_t kRecordVersion = 1;
+    constexpr std::uint32_t kRecordVersion = 2;
+    constexpr std::uint32_t kRecordVersion1 = 1;
+
+    struct SerializedCustomKeyHeaderV1 {
+        RE::FormID enchantmentFormID {0};
+        std::uint16_t charge {0};
+        std::uint8_t removeOnUnequip {0};
+        std::uint8_t pad {0};
+        std::uint32_t displayNameLength {0};
+    };
 
     struct SerializedCustomKeyHeader {
         RE::FormID enchantmentFormID {0};
         std::uint16_t charge {0};
         std::uint8_t removeOnUnequip {0};
-        std::uint8_t pad {0};
+        std::uint8_t hasIdentity {0};
+        RE::FormID uniqueBaseID {0};
+        std::uint16_t uniqueID {0};
+        std::uint16_t pad {0};
         std::uint32_t displayNameLength {0};
     };
 
@@ -38,10 +50,14 @@ namespace {
         }
 
         const auto& customKey = a_state.customKey;
+        const auto& customIdentity = a_state.customIdentity;
         const auto header = SerializedCustomKeyHeader {
             .enchantmentFormID = customKey.enchantmentFormID,
             .charge = customKey.charge,
             .removeOnUnequip = customKey.removeOnUnequip ? std::uint8_t {1} : std::uint8_t {0},
+            .hasIdentity = customIdentity ? std::uint8_t {1} : std::uint8_t {0},
+            .uniqueBaseID = customIdentity ? customIdentity->baseID : RE::FormID {0},
+            .uniqueID = customIdentity ? customIdentity->uniqueID : std::uint16_t {0},
             .displayNameLength = static_cast<std::uint32_t>(customKey.playerDisplayName.size()),
         };
 
@@ -87,7 +103,8 @@ namespace {
 
     [[nodiscard]] std::optional<Selection::State> ReadState(
         SKSE::SerializationInterface& a_intfc,
-        std::uint32_t& a_remaining
+        std::uint32_t& a_remaining,
+        const std::uint32_t a_version
     ) {
         std::uint32_t kind = 0;
         RE::FormID sourceFormID = 0;
@@ -102,7 +119,25 @@ namespace {
 
         if (state.kind == Selection::Kind::kCustomEnchantment) {
             SerializedCustomKeyHeader header;
-            if (!ReadField(a_intfc, a_remaining, header) || header.displayNameLength > a_remaining) {
+            if (a_version == kRecordVersion1) {
+                SerializedCustomKeyHeaderV1 headerV1;
+                if (!ReadField(a_intfc, a_remaining, headerV1)) {
+                    DrainRecordData(a_intfc, a_remaining);
+                    return std::nullopt;
+                }
+
+                header = SerializedCustomKeyHeader {
+                    .enchantmentFormID = headerV1.enchantmentFormID,
+                    .charge = headerV1.charge,
+                    .removeOnUnequip = headerV1.removeOnUnequip,
+                    .displayNameLength = headerV1.displayNameLength,
+                };
+            } else if (!ReadField(a_intfc, a_remaining, header)) {
+                DrainRecordData(a_intfc, a_remaining);
+                return std::nullopt;
+            }
+
+            if (header.displayNameLength > a_remaining) {
                 DrainRecordData(a_intfc, a_remaining);
                 return std::nullopt;
             }
@@ -112,6 +147,13 @@ namespace {
                 .charge = header.charge,
                 .removeOnUnequip = header.removeOnUnequip != 0,
             };
+
+            if (header.hasIdentity != 0) {
+                state.customIdentity = Inventory::ExtraListIdentity {
+                    .baseID = header.uniqueBaseID,
+                    .uniqueID = header.uniqueID,
+                };
+            }
 
             if (header.displayNameLength > 0) {
                 state.customKey.playerDisplayName.resize(header.displayNameLength);
@@ -132,11 +174,12 @@ namespace {
 
     [[nodiscard]] std::optional<Selection::Snapshot> ReadSnapshot(
         SKSE::SerializationInterface& a_intfc,
-        const std::uint32_t a_length
+        const std::uint32_t a_length,
+        const std::uint32_t a_version
     ) {
         auto remaining = a_length;
-        auto normal = ReadState(a_intfc, remaining);
-        auto bond = normal ? ReadState(a_intfc, remaining) : std::nullopt;
+        auto normal = ReadState(a_intfc, remaining, a_version);
+        auto bond = normal ? ReadState(a_intfc, remaining, a_version) : std::nullopt;
         if (!normal || !bond) {
             DrainRecordData(a_intfc, remaining);
             return std::nullopt;
@@ -202,7 +245,7 @@ namespace {
                 continue;
             }
 
-            if (version != kRecordVersion) {
+            if (version != kRecordVersion1 && version != kRecordVersion) {
                 logger::warn(
                     "Serialization: record skipped | version={} | length={} | reason=unsupportedStateVersion",
                     version,
@@ -211,7 +254,7 @@ namespace {
                 continue;
             }
 
-            auto state = ReadSnapshot(*a_intfc, length);
+            auto state = ReadSnapshot(*a_intfc, length, version);
             if (!state) {
                 logger::error("Serialization: load failed | record=state | reason=readRecord");
                 continue;

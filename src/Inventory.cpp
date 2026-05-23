@@ -27,6 +27,17 @@ namespace {
 
         return nullptr;
     }
+
+    [[nodiscard]] bool EntryContainsExtraList(
+        const RE::InventoryEntryData* a_entry,
+        const RE::ExtraDataList* a_extraList
+    ) {
+        if (!a_entry || !a_entry->extraLists || !a_extraList) {
+            return false;
+        }
+
+        return std::ranges::find(*a_entry->extraLists, a_extraList) != a_entry->extraLists->end();
+    }
 }
 
 bool EntryCustomSelection::HasCustomEnchantment() const {
@@ -56,6 +67,14 @@ bool operator!=(const CustomEnchantmentKey& a_lhs, const CustomEnchantmentKey& a
     return !(a_lhs == a_rhs);
 }
 
+bool operator==(const ExtraListIdentity& a_lhs, const ExtraListIdentity& a_rhs) {
+    return a_lhs.baseID == a_rhs.baseID && a_lhs.uniqueID == a_rhs.uniqueID;
+}
+
+bool operator!=(const ExtraListIdentity& a_lhs, const ExtraListIdentity& a_rhs) {
+    return !(a_lhs == a_rhs);
+}
+
 bool HasCustomEnchantment(const RE::ExtraDataList* a_extraList) {
     const auto* enchantment = a_extraList ? a_extraList->GetByType<RE::ExtraEnchantment>() : nullptr;
     return enchantment && enchantment->enchantment;
@@ -80,9 +99,96 @@ std::optional<CustomEnchantmentKey> ReadCustomEnchantmentKey(const RE::ExtraData
     return key;
 }
 
+std::optional<ExtraListIdentity> ReadExtraListIdentity(const RE::ExtraDataList* a_extraList) {
+    const auto* uniqueID = a_extraList ? a_extraList->GetByType<RE::ExtraUniqueID>() : nullptr;
+    if (!uniqueID) {
+        return std::nullopt;
+    }
+
+    const auto identity = ExtraListIdentity {
+        .baseID = uniqueID->baseID,
+        .uniqueID = uniqueID->uniqueID,
+    };
+    return identity.IsValid() ? std::make_optional(identity) : std::nullopt;
+}
+
+std::optional<ExtraListIdentity> EnsureExtraListIdentity(
+    RE::Actor& a_actor,
+    const RE::TESBoundObject& a_object,
+    RE::ExtraDataList& a_extraList
+) {
+    if (auto existing = ReadExtraListIdentity(std::addressof(a_extraList))) {
+        return existing;
+    }
+
+    auto* inventoryChanges = a_actor.GetInventoryChanges();
+    if (!inventoryChanges) {
+        logger::warn(
+            "Inventory: unique id assign skipped | form={:08X} | extraList={} | reason=noInventoryChanges",
+            a_object.GetFormID(),
+            static_cast<const void*>(std::addressof(a_extraList))
+        );
+        return std::nullopt;
+    }
+
+    auto* entry = FindEntry(a_actor, a_object);
+    if (!EntryContainsExtraList(entry, std::addressof(a_extraList))) {
+        logger::warn(
+            "Inventory: unique id assign skipped | form={:08X} | extraList={} | reason=extraListNotInInventory",
+            a_object.GetFormID(),
+            static_cast<const void*>(std::addressof(a_extraList))
+        );
+        return std::nullopt;
+    }
+
+    const auto uniqueID = inventoryChanges->GetNextUniqueID();
+    if (uniqueID == 0) {
+        logger::warn(
+            "Inventory: unique id assign skipped | form={:08X} | extraList={} | reason=noUniqueID",
+            a_object.GetFormID(),
+            static_cast<const void*>(std::addressof(a_extraList))
+        );
+        return std::nullopt;
+    }
+
+    const auto uniqueBaseID = a_actor.GetFormID();
+    auto* extraUniqueID = new RE::ExtraUniqueID(uniqueBaseID, uniqueID);
+    if (!a_extraList.Add(extraUniqueID)) {
+        delete extraUniqueID;
+        logger::warn(
+            "Inventory: unique id assign skipped | form={:08X} | extraList={} | uniqueBase={:08X} | uniqueID={} | reason=addFailed",
+            a_object.GetFormID(),
+            static_cast<const void*>(std::addressof(a_extraList)),
+            uniqueBaseID,
+            uniqueID
+        );
+        return std::nullopt;
+    }
+
+    inventoryChanges->changed = true;
+    return ReadExtraListIdentity(std::addressof(a_extraList));
+}
+
 bool MatchesCustomEnchantmentKey(const RE::ExtraDataList* a_extraList, const CustomEnchantmentKey& a_key) {
     const auto key = ReadCustomEnchantmentKey(a_extraList);
     return key && *key == a_key;
+}
+
+bool MatchesExtraListIdentity(const RE::ExtraDataList* a_extraList, const ExtraListIdentity& a_identity) {
+    const auto identity = ReadExtraListIdentity(a_extraList);
+    return identity && *identity == a_identity;
+}
+
+bool MatchesCustomSelection(
+    const RE::ExtraDataList* a_extraList,
+    const CustomEnchantmentKey& a_key,
+    const std::optional<ExtraListIdentity>& a_identity
+) {
+    if (!MatchesCustomEnchantmentKey(a_extraList, a_key)) {
+        return false;
+    }
+
+    return !a_identity || MatchesExtraListIdentity(a_extraList, *a_identity);
 }
 
 bool IsRightWorn(const RE::ExtraDataList* a_extraList) {
@@ -147,17 +253,18 @@ std::int32_t GetCount(RE::Actor& a_actor, const RE::TESBoundObject& a_object) {
     });
 }
 
-CustomMatchState FindCustomMatches(RE::InventoryEntryData* a_entry, const CustomEnchantmentKey& a_key) {
+CustomMatchState FindCustomMatches(
+    RE::InventoryEntryData* a_entry,
+    const CustomEnchantmentKey& a_key,
+    const std::optional<ExtraListIdentity>& a_identity
+) {
     CustomMatchState state;
     if (!a_entry || !a_entry->extraLists) {
         return state;
     }
 
     for (auto* extraList : *a_entry->extraLists) {
-        const auto key = ReadCustomEnchantmentKey(extraList);
-        const auto matches = key && *key == a_key;
-
-        if (!matches) {
+        if (!MatchesCustomSelection(extraList, a_key, a_identity)) {
             continue;
         }
 
@@ -178,9 +285,10 @@ CustomMatchState FindCustomMatches(RE::InventoryEntryData* a_entry, const Custom
 CustomMatchState FindSourceMatches(
     RE::Actor& a_actor,
     const RE::TESObjectARMO& a_ring,
-    const CustomEnchantmentKey& a_key
+    const CustomEnchantmentKey& a_key,
+    const std::optional<ExtraListIdentity>& a_identity
 ) {
-    return FindCustomMatches(FindEntry(a_actor, a_ring), a_key);
+    return FindCustomMatches(FindEntry(a_actor, a_ring), a_key, a_identity);
 }
 
 EntryCustomSelection ResolveCustomSelection(RE::InventoryEntryData& a_entry) {
@@ -200,12 +308,14 @@ EntryCustomSelection ResolveCustomSelection(RE::InventoryEntryData& a_entry) {
             selection.failure = EntryCustomFailure::kMultipleCustomKeys;
             selection.extraList = nullptr;
             selection.key = std::nullopt;
+            selection.identity = std::nullopt;
             return selection;
         }
 
         selection.key = key;
         if (!selection.extraList || IsRightWorn(extraList)) {
             selection.extraList = extraList;
+            selection.identity = ReadExtraListIdentity(extraList);
         }
     }
 

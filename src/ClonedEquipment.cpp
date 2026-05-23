@@ -1250,14 +1250,15 @@ std::optional<CustomSelectionSource> ResolveCustomSelectionSource(
         return std::nullopt;
     }
 
-    const auto sourceMatches = Inventory::FindSourceMatches(a_actor, *sourceRing, customKey);
+    const auto
+        sourceMatches = Inventory::FindSourceMatches(a_actor, *sourceRing, customKey, a_selection.GetCustomIdentity());
     auto* sourceExtraList = sourceMatches.firstExtraList;
     if (!sourceExtraList) {
         Selection::Clear(a_channel);
         return std::nullopt;
     }
 
-    if (!Inventory::MatchesCustomEnchantmentKey(sourceExtraList, customKey)) {
+    if (!Inventory::MatchesCustomSelection(sourceExtraList, customKey, a_selection.GetCustomIdentity())) {
         Selection::Clear(a_channel);
         return std::nullopt;
     }

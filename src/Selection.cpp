@@ -60,6 +60,42 @@ namespace {
         NotifyInventoryChanged(a_actor, std::addressof(a_ring));
     }
 
+    struct StoredCustomIdentityResult {
+        std::optional<Inventory::ExtraListIdentity> identity;
+        bool valid {true};
+    };
+
+    [[nodiscard]] StoredCustomIdentityResult ResolveStoredCustomIdentity(
+        SKSE::SerializationInterface& a_intfc,
+        const DisplaySlot a_channel,
+        const State& a_storedState,
+        const RE::FormID a_sourceFormID
+    ) {
+        auto identity = a_storedState.customIdentity;
+        if (!identity) {
+            return {};
+        }
+
+        identity->baseID = ResolveFormID(a_intfc, identity->baseID, "custom unique base"sv);
+
+        if (!identity->IsValid()) {
+            logger::warn(
+                "Serialization: custom selection cleared | channel={} | source={:08X} | uniqueBase={:08X} | uniqueID={} | reason=uniqueIDResolveFailed",
+                DisplaySlotLabel(a_channel),
+                a_sourceFormID,
+                a_storedState.customIdentity->baseID,
+                a_storedState.customIdentity->uniqueID
+            );
+            return StoredCustomIdentityResult {
+                .valid = false,
+            };
+        }
+
+        return StoredCustomIdentityResult {
+            .identity = identity,
+        };
+    }
+
     void EnforceSameSourceInvariant(const DisplaySlot a_channel) {
         auto* player = GetPlayer();
         if (!player) {
@@ -80,7 +116,8 @@ namespace {
 
         if (selection.kind == Kind::kCustomEnchantment) {
             const auto customKey = selection.GetCustomKey();
-            const auto sourceMatches = Inventory::FindSourceMatches(*player, *ring, customKey);
+            const auto
+                sourceMatches = Inventory::FindSourceMatches(*player, *ring, customKey, selection.GetCustomIdentity());
             if (!sourceMatches.HasMatch()) {
                 ClearVirtualLeftSelection(*player, *ring, a_channel);
                 return;
@@ -144,6 +181,7 @@ namespace {
     void MoveRightToLeftCustom(
         const RE::FormID a_sourceFormID,
         const Inventory::CustomEnchantmentKey& a_customKey,
+        const std::optional<Inventory::ExtraListIdentity>& a_customIdentity,
         const DisplaySlot a_channel,
         const bool a_playSounds
     ) {
@@ -157,7 +195,7 @@ namespace {
             return;
         }
 
-        auto sourceMatches = Inventory::FindSourceMatches(*player, *ring, a_customKey);
+        auto sourceMatches = Inventory::FindSourceMatches(*player, *ring, a_customKey, a_customIdentity);
         if (!sourceMatches.HasMatch()) {
             NotifyInventoryChanged(*player, ring);
             return;
@@ -185,7 +223,7 @@ namespace {
             );
             realInventoryChanged = true;
 
-            sourceMatches = Inventory::FindSourceMatches(*player, *ring, a_customKey);
+            sourceMatches = Inventory::FindSourceMatches(*player, *ring, a_customKey, a_customIdentity);
             if (!sourceMatches.HasMatch()
                 || (sourceMatches.rightWornExtraList && !sourceMatches.CanWearSameKeyInBothHands())) {
                 NotifyInventoryChanged(*player, ring);
@@ -193,7 +231,7 @@ namespace {
             }
         }
 
-        SetCustom(*ring, a_customKey, a_channel);
+        SetCustom(*ring, a_customKey, a_customIdentity, a_channel);
         RequestEquipmentRefresh(a_playSounds, a_channel);
 
         if (realInventoryChanged) {
@@ -206,6 +244,7 @@ namespace {
     void MoveLeftToRight(
         const RE::FormID a_sourceFormID,
         const std::optional<Inventory::CustomEnchantmentKey>& a_customKey,
+        const std::optional<Inventory::ExtraListIdentity>& a_customIdentity,
         const RE::FormID a_equipSlotFormID,
         const bool a_forceEquip,
         const bool a_playSounds,
@@ -231,10 +270,10 @@ namespace {
 
         RE::ExtraDataList* equipExtraList = nullptr;
         if (a_customKey) {
-            const auto sourceMatches = Inventory::FindSourceMatches(*player, *ring, *a_customKey);
+            const auto sourceMatches = Inventory::FindSourceMatches(*player, *ring, *a_customKey, a_customIdentity);
             equipExtraList = sourceMatches.firstExtraList;
             if (!equipExtraList) {
-                if (Get(a_channel).MatchesCustomEnchantment(a_sourceFormID, *a_customKey)) {
+                if (Get(a_channel).MatchesCustomEnchantment(a_sourceFormID, *a_customKey, a_customIdentity)) {
                     ClearVirtualLeftSelection(*player, *ring, a_channel);
                 }
                 NotifyInventoryChanged(*player, ring);
@@ -244,7 +283,7 @@ namespace {
 
         const auto selection = Get(a_channel);
         if ((!a_customKey && selection.MatchesForm(a_sourceFormID))
-            || (a_customKey && selection.MatchesCustomEnchantment(a_sourceFormID, *a_customKey))) {
+            || (a_customKey && selection.MatchesCustomEnchantment(a_sourceFormID, *a_customKey, a_customIdentity))) {
             ClearVirtualLeftSelection(*player, *ring, a_channel);
         }
 
@@ -297,16 +336,26 @@ namespace {
     void QueueMoveLeftToRight(
         const RE::FormID a_sourceFormID,
         std::optional<Inventory::CustomEnchantmentKey> a_customKey,
+        std::optional<Inventory::ExtraListIdentity> a_customIdentity,
         const RE::ObjectEquipParams& a_params,
         const DisplaySlot a_channel
     ) {
         stl::add_task([a_sourceFormID,
                           customKey = std::move(a_customKey),
+                          customIdentity = a_customIdentity,
                           equipSlotFormID = EquipSlotFormID(a_params),
                           forceEquip = a_params.forceEquip,
                           playSounds = a_params.playEquipSounds,
                           a_channel] {
-            MoveLeftToRight(a_sourceFormID, customKey, equipSlotFormID, forceEquip, playSounds, a_channel);
+            MoveLeftToRight(
+                a_sourceFormID,
+                customKey,
+                customIdentity,
+                equipSlotFormID,
+                forceEquip,
+                playSounds,
+                a_channel
+            );
         });
     }
 
@@ -319,18 +368,28 @@ namespace {
     ) {
         const auto sourceFormID = a_ring.GetFormID();
         const auto selectedCustomKey = a_selection.GetCustomKey();
+        const auto selectedCustomIdentity = a_selection.GetCustomIdentity();
         if (a_params.extraDataList) {
-            const auto paramsMatch = Inventory::MatchesCustomEnchantmentKey(a_params.extraDataList, selectedCustomKey);
+            const auto paramsMatch = Inventory::MatchesCustomSelection(
+                a_params.extraDataList,
+                selectedCustomKey,
+                selectedCustomIdentity
+            );
             if (!paramsMatch) {
                 return false;
             }
 
-            const auto sourceMatches = Inventory::FindSourceMatches(a_actor, a_ring, selectedCustomKey);
-            if (sourceMatches.CanWearSameKeyInBothHands()) {
+            const auto sourceMatches = Inventory::FindSourceMatches(
+                a_actor,
+                a_ring,
+                selectedCustomKey,
+                selectedCustomIdentity
+            );
+            if (!selectedCustomIdentity && sourceMatches.CanWearSameKeyInBothHands()) {
                 return false;
             }
 
-            QueueMoveLeftToRight(sourceFormID, selectedCustomKey, a_params, a_channel);
+            QueueMoveLeftToRight(sourceFormID, selectedCustomKey, selectedCustomIdentity, a_params, a_channel);
             return true;
         }
 
@@ -339,7 +398,7 @@ namespace {
             return false;
         }
 
-        QueueMoveLeftToRight(sourceFormID, selectedCustomKey, a_params, a_channel);
+        QueueMoveLeftToRight(sourceFormID, selectedCustomKey, selectedCustomIdentity, a_params, a_channel);
         return true;
     }
     void ClearRestoreForChannel(const DisplaySlot a_channel) {
@@ -362,6 +421,7 @@ namespace {
     void SetCustomSelection(
         RE::TESObjectARMO& a_ring,
         Inventory::CustomEnchantmentKey a_key,
+        std::optional<Inventory::ExtraListIdentity> a_identity,
         const DisplaySlot a_channel
     ) {
         std::scoped_lock lock(g_lock);
@@ -369,6 +429,7 @@ namespace {
             .kind = Kind::kCustomEnchantment,
             .sourceFormID = a_ring.GetFormID(),
             .customKey = std::move(a_key),
+            .customIdentity = a_identity,
         };
         ClearRestoreForChannel(a_channel);
     }
@@ -378,8 +439,13 @@ void Set(RE::TESObjectARMO* a_ring, const DisplaySlot a_channel) {
     SetSelection(a_ring, a_channel);
 }
 
-void SetCustom(RE::TESObjectARMO& a_ring, Inventory::CustomEnchantmentKey a_key, const DisplaySlot a_channel) {
-    SetCustomSelection(a_ring, std::move(a_key), a_channel);
+void SetCustom(
+    RE::TESObjectARMO& a_ring,
+    Inventory::CustomEnchantmentKey a_key,
+    std::optional<Inventory::ExtraListIdentity> a_identity,
+    const DisplaySlot a_channel
+) {
+    SetCustomSelection(a_ring, std::move(a_key), a_identity, a_channel);
 }
 
 void Clear(const DisplaySlot a_channel) {
@@ -456,10 +522,16 @@ void Load(const Snapshot& a_state, SKSE::SerializationInterface& a_intfc) {
                 return;
             }
 
+            const auto customIdentity = ResolveStoredCustomIdentity(a_intfc, a_channel, a_storedState, sourceFormID);
+            if (!customIdentity.valid) {
+                return;
+            }
+
             g_selections[ToIndex(a_channel)] = State {
                 .kind = Kind::kCustomEnchantment,
                 .sourceFormID = sourceFormID,
                 .customKey = std::move(customKey),
+                .customIdentity = customIdentity.identity,
             };
         } else {
             logger::warn(
@@ -541,11 +613,12 @@ void RequestMove(const RE::FormID a_sourceFormID, const DisplaySlot a_channel, c
 void RequestCustomMove(
     const RE::FormID a_sourceFormID,
     Inventory::CustomEnchantmentKey a_key,
+    std::optional<Inventory::ExtraListIdentity> a_identity,
     const DisplaySlot a_channel,
     const bool a_playSounds
 ) {
-    stl::add_task([a_sourceFormID, key = std::move(a_key), a_channel, a_playSounds] {
-        MoveRightToLeftCustom(a_sourceFormID, key, a_channel, a_playSounds);
+    stl::add_task([a_sourceFormID, key = std::move(a_key), identity = a_identity, a_channel, a_playSounds] {
+        MoveRightToLeftCustom(a_sourceFormID, key, identity, a_channel, a_playSounds);
     });
 }
 
@@ -571,7 +644,7 @@ bool InterceptRightEquip(RE::Actor& a_actor, const RE::TESObjectARMO& a_ring, co
         return false;
     }
 
-    QueueMoveLeftToRight(sourceFormID, std::nullopt, a_params, channel);
+    QueueMoveLeftToRight(sourceFormID, std::nullopt, std::nullopt, a_params, channel);
     return true;
 }
 

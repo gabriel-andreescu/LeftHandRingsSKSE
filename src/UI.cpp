@@ -21,6 +21,9 @@ namespace {
     constexpr auto kScaleformCustomCharge = "lhrsCustomCharge";
     constexpr auto kScaleformCustomRemoveOnUnequip = "lhrsCustomRemoveOnUnequip";
     constexpr auto kScaleformCustomDisplayName = "lhrsCustomDisplayName";
+    constexpr auto kScaleformCustomHasUniqueID = "lhrsCustomHasUniqueID";
+    constexpr auto kScaleformCustomUniqueBaseID = "lhrsCustomUniqueBaseID";
+    constexpr auto kScaleformCustomUniqueID = "lhrsCustomUniqueID";
     constexpr auto kScaleformCustomBlockReason = "lhrsCustomBlockReason";
     constexpr auto kScaleformRightEquipped = "lhrsRightEquipped";
     constexpr auto kInventoryEntryListPath = "_root.Menu_mc.inventoryLists.itemList.entryList";
@@ -29,11 +32,13 @@ namespace {
     struct RowSelection {
         Selection::Kind kind {Selection::Kind::kNone};
         std::optional<Inventory::CustomEnchantmentKey> customKey;
+        std::optional<Inventory::ExtraListIdentity> customIdentity;
     };
 
     struct LeftSelectionRequest {
         RE::TESObjectARMO* ring {nullptr};
         std::optional<Inventory::CustomEnchantmentKey> customKey;
+        std::optional<Inventory::ExtraListIdentity> customIdentity;
         RE::ExtraDataList* sourceExtraList {nullptr};
         bool blocked {false};
     };
@@ -91,7 +96,7 @@ namespace {
         return a_rowSelection.kind
                == Selection::Kind::kCustomEnchantment
                && a_rowSelection.customKey
-               && selection.MatchesCustomEnchantment(formID, *a_rowSelection.customKey);
+               && selection.MatchesCustomEnchantment(formID, *a_rowSelection.customKey, a_rowSelection.customIdentity);
     }
 
     [[nodiscard]] int GetRingEquipState(
@@ -126,7 +131,12 @@ namespace {
         }
 
         if (a_rowSelection.kind == Selection::Kind::kCustomEnchantment && a_rowSelection.customKey) {
-            const auto matches = Inventory::FindSourceMatches(*player, a_ring, *a_rowSelection.customKey);
+            const auto matches = Inventory::FindSourceMatches(
+                *player,
+                a_ring,
+                *a_rowSelection.customKey,
+                a_rowSelection.customIdentity
+            );
             return matches.rightWornExtraList != nullptr;
         }
 
@@ -252,6 +262,33 @@ namespace {
             };
         }
 
+        std::optional<Inventory::ExtraListIdentity> customIdentity;
+        if (const auto hasUniqueID = GetScaleformBoolMember(a_object, kScaleformCustomHasUniqueID);
+            hasUniqueID.value_or(false)) {
+            RE::GFxValue uniqueBaseID;
+            RE::GFxValue uniqueID;
+            if (!a_object.GetMember(kScaleformCustomUniqueBaseID, std::addressof(uniqueBaseID))
+                || !uniqueBaseID.IsNumber()
+                || !a_object.GetMember(kScaleformCustomUniqueID, std::addressof(uniqueID))
+                || !uniqueID.IsNumber()) {
+                return RowSelection {
+                    .kind = Selection::Kind::kNone,
+                };
+            }
+
+            const auto identity = Inventory::ExtraListIdentity {
+                .baseID = static_cast<RE::FormID>(uniqueBaseID.GetNumber()),
+                .uniqueID = static_cast<std::uint16_t>(uniqueID.GetNumber()),
+            };
+            if (!identity.IsValid()) {
+                return RowSelection {
+                    .kind = Selection::Kind::kNone,
+                };
+            }
+
+            customIdentity = identity;
+        }
+
         return RowSelection {
             .kind = Selection::Kind::kCustomEnchantment,
             .customKey = Inventory::CustomEnchantmentKey {
@@ -260,6 +297,7 @@ namespace {
                 .removeOnUnequip = removeOnUnequip.GetBool(),
                 .playerDisplayName = GetScaleformStringMember(a_object, kScaleformCustomDisplayName),
             },
+            .customIdentity = customIdentity,
         };
     }
 
@@ -267,17 +305,47 @@ namespace {
         RE::GFxValue& a_object,
         const Selection::Kind a_kind,
         const std::optional<Inventory::CustomEnchantmentKey>& a_customKey,
+        const std::optional<Inventory::ExtraListIdentity>& a_customIdentity,
         const Inventory::EntryCustomFailure a_failure
     ) {
         a_object.SetMember(kScaleformSelectionKind, std::to_underlying(a_kind));
         a_object.SetMember(kScaleformCustomEnchantmentID, a_customKey ? a_customKey->enchantmentFormID : 0);
         a_object.SetMember(kScaleformCustomCharge, a_customKey ? a_customKey->charge : 0);
         a_object.SetMember(kScaleformCustomRemoveOnUnequip, a_customKey && a_customKey->removeOnUnequip);
+        a_object.SetMember(kScaleformCustomHasUniqueID, a_customIdentity.has_value());
+        a_object.SetMember(kScaleformCustomUniqueBaseID, a_customIdentity ? a_customIdentity->baseID : 0);
+        a_object.SetMember(kScaleformCustomUniqueID, a_customIdentity ? a_customIdentity->uniqueID : 0);
 
         RE::GFxValue displayName;
         displayName.SetString(a_customKey ? std::string_view {a_customKey->playerDisplayName} : std::string_view {});
         a_object.SetMember(kScaleformCustomDisplayName, displayName);
         a_object.SetMember(kScaleformCustomBlockReason, std::to_underlying(a_failure));
+    }
+
+    [[nodiscard]] std::optional<Inventory::ExtraListIdentity> EnsureCustomSelectionIdentity(
+        RE::TESObjectARMO& a_ring,
+        Inventory::EntryCustomSelection& a_customSelection
+    ) {
+        if (!a_customSelection.HasCustomEnchantment() || !a_customSelection.extraList) {
+            return std::nullopt;
+        }
+
+        if (a_customSelection.identity) {
+            return a_customSelection.identity;
+        }
+
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) {
+            logger::warn(
+                "UI: custom selection identity skipped | form={:08X} | extraList={} | reason=noPlayer",
+                a_ring.GetFormID(),
+                static_cast<const void*>(a_customSelection.extraList)
+            );
+            return std::nullopt;
+        }
+
+        a_customSelection.identity = Inventory::EnsureExtraListIdentity(*player, a_ring, *a_customSelection.extraList);
+        return a_customSelection.identity;
     }
 
     [[nodiscard]] std::optional<bool> RestampRingObjectFromStoredSelection(RE::GFxValue& a_object) {
@@ -317,23 +385,30 @@ namespace {
         auto customSelection = Inventory::ResolveCustomSelection(a_entry);
         auto selectionKind = Selection::Kind::kFormOnly;
         std::optional<Inventory::CustomEnchantmentKey> customKey;
+        std::optional<Inventory::ExtraListIdentity> customIdentity;
         auto rightEquipped = a_entry.IsWorn(false);
 
         if (customSelection.failure != Inventory::EntryCustomFailure::kNone) {
             selectionKind = Selection::Kind::kNone;
         } else if (customSelection.HasCustomEnchantment()) {
-            selectionKind = Selection::Kind::kCustomEnchantment;
-            customKey = customSelection.key;
-            rightEquipped = Inventory::IsRightWorn(customSelection.extraList);
+            customIdentity = EnsureCustomSelectionIdentity(*ring, customSelection);
+            if (customIdentity) {
+                selectionKind = Selection::Kind::kCustomEnchantment;
+                customKey = customSelection.key;
+                rightEquipped = Inventory::IsRightWorn(customSelection.extraList);
+            } else {
+                selectionKind = Selection::Kind::kNone;
+            }
         }
 
-        StampScaleformSelection(a_object, selectionKind, customKey, customSelection.failure);
+        StampScaleformSelection(a_object, selectionKind, customKey, customIdentity, customSelection.failure);
 
         const auto equipState = GetRingEquipState(
             *ring,
             RowSelection {
                 .kind = selectionKind,
                 .customKey = customKey,
+                .customIdentity = customIdentity,
             },
             rightEquipped
         );
@@ -559,9 +634,18 @@ namespace {
         }
 
         if (customSelection.HasCustomEnchantment()) {
+            const auto customIdentity = EnsureCustomSelectionIdentity(*ring, customSelection);
+            if (!customIdentity) {
+                return LeftSelectionRequest {
+                    .ring = ring,
+                    .blocked = true,
+                };
+            }
+
             return LeftSelectionRequest {
                 .ring = ring,
                 .customKey = customSelection.key,
+                .customIdentity = customIdentity,
                 .sourceExtraList = customSelection.extraList,
             };
         }
@@ -584,7 +668,7 @@ namespace {
     ) {
         const auto selection = Selection::Get(a_channel);
         if (a_request.customKey) {
-            return selection.MatchesCustomEnchantment(a_formID, *a_request.customKey);
+            return selection.MatchesCustomEnchantment(a_formID, *a_request.customKey, a_request.customIdentity);
         }
 
         return selection.MatchesForm(a_formID);
@@ -597,26 +681,27 @@ namespace {
         const LeftSelectionRequest& a_request,
         const Inventory::CustomEnchantmentKey& a_customKey
     ) {
-        const auto sourceMatches = Inventory::FindSourceMatches(a_player, a_ring, a_customKey);
+        const auto
+            sourceMatches = Inventory::FindSourceMatches(a_player, a_ring, a_customKey, a_request.customIdentity);
         auto* sourceExtraList = sourceMatches.firstExtraList;
         if (a_request.sourceExtraList
-            && Inventory::MatchesCustomEnchantmentKey(a_request.sourceExtraList, a_customKey)) {
+            && Inventory::MatchesCustomSelection(a_request.sourceExtraList, a_customKey, a_request.customIdentity)) {
             sourceExtraList = a_request.sourceExtraList;
         }
         if (!sourceExtraList || !sourceMatches.HasMatch()) {
             return ToggleResult::kFailed;
         }
 
-        if (!Inventory::MatchesCustomEnchantmentKey(sourceExtraList, a_customKey)) {
+        if (!Inventory::MatchesCustomSelection(sourceExtraList, a_customKey, a_request.customIdentity)) {
             return ToggleResult::kFailed;
         }
 
         if (sourceMatches.rightWornExtraList && !sourceMatches.CanWearSameKeyInBothHands()) {
-            Selection::RequestCustomMove(a_ring.GetFormID(), a_customKey, a_channel, true);
+            Selection::RequestCustomMove(a_ring.GetFormID(), a_customKey, a_request.customIdentity, a_channel, true);
             return ToggleResult::kQueued;
         }
 
-        Selection::SetCustom(a_ring, a_customKey, a_channel);
+        Selection::SetCustom(a_ring, a_customKey, a_request.customIdentity, a_channel);
         return ToggleResult::kChanged;
     }
 

@@ -18,9 +18,14 @@ struct State {
     Kind kind {Kind::kNone};
     RE::FormID sourceFormID {0};
     Inventory::CustomEnchantmentKey customKey;
+    std::optional<Inventory::ExtraListIdentity> customIdentity;
 
     [[nodiscard]] Inventory::CustomEnchantmentKey GetCustomKey() const {
         return customKey;
+    }
+
+    [[nodiscard]] std::optional<Inventory::ExtraListIdentity> GetCustomIdentity() const {
+        return customIdentity;
     }
 
     [[nodiscard]] bool MatchesForm(RE::FormID a_sourceFormID) const {
@@ -29,9 +34,14 @@ struct State {
 
     [[nodiscard]] bool MatchesCustomEnchantment(
         RE::FormID a_sourceFormID,
-        const Inventory::CustomEnchantmentKey& a_key
+        const Inventory::CustomEnchantmentKey& a_key,
+        const std::optional<Inventory::ExtraListIdentity>& a_identity = std::nullopt
     ) const {
-        return kind == Kind::kCustomEnchantment && sourceFormID == a_sourceFormID && customKey == a_key;
+        if (kind != Kind::kCustomEnchantment || sourceFormID != a_sourceFormID || customKey != a_key) {
+            return false;
+        }
+
+        return !customIdentity || (a_identity && *customIdentity == *a_identity);
     }
 
     [[nodiscard]] bool MatchesSource(RE::FormID a_sourceFormID) const {
@@ -50,6 +60,7 @@ void Set(RE::TESObjectARMO* a_ring, DisplaySlot a_channel = DisplaySlot::kRegula
 void SetCustom(
     RE::TESObjectARMO& a_ring,
     Inventory::CustomEnchantmentKey a_key,
+    std::optional<Inventory::ExtraListIdentity> a_identity = std::nullopt,
     DisplaySlot a_channel = DisplaySlot::kRegular
 );
 void Clear(DisplaySlot a_channel = DisplaySlot::kRegular);
@@ -68,6 +79,7 @@ void RequestMove(RE::FormID a_sourceFormID, DisplaySlot a_channel = DisplaySlot:
 void RequestCustomMove(
     RE::FormID a_sourceFormID,
     Inventory::CustomEnchantmentKey a_key,
+    std::optional<Inventory::ExtraListIdentity> a_identity = std::nullopt,
     DisplaySlot a_channel = DisplaySlot::kRegular,
     bool a_playSounds = false
 );

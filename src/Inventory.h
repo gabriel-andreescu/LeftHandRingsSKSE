@@ -11,6 +11,15 @@ struct CustomEnchantmentKey {
     std::string playerDisplayName;
 };
 
+struct ExtraListIdentity {
+    RE::FormID baseID {0};
+    std::uint16_t uniqueID {0};
+
+    [[nodiscard]] bool IsValid() const {
+        return baseID != 0 && uniqueID != 0;
+    }
+};
+
 struct CustomEnchantmentData {
     RE::EnchantmentItem* enchantment {nullptr};
     std::uint16_t charge {0};
@@ -26,6 +35,7 @@ enum class EntryCustomFailure : std::uint32_t {
 struct EntryCustomSelection {
     RE::ExtraDataList* extraList {nullptr};
     std::optional<CustomEnchantmentKey> key;
+    std::optional<ExtraListIdentity> identity;
     EntryCustomFailure failure {EntryCustomFailure::kNone};
 
     [[nodiscard]] bool HasCustomEnchantment() const;
@@ -53,19 +63,38 @@ struct SourceRingState {
 
 [[nodiscard]] bool operator==(const CustomEnchantmentKey& a_lhs, const CustomEnchantmentKey& a_rhs);
 [[nodiscard]] bool operator!=(const CustomEnchantmentKey& a_lhs, const CustomEnchantmentKey& a_rhs);
+[[nodiscard]] bool operator==(const ExtraListIdentity& a_lhs, const ExtraListIdentity& a_rhs);
+[[nodiscard]] bool operator!=(const ExtraListIdentity& a_lhs, const ExtraListIdentity& a_rhs);
 [[nodiscard]] bool HasCustomEnchantment(const RE::ExtraDataList* a_extraList);
 [[nodiscard]] std::optional<CustomEnchantmentKey> ReadCustomEnchantmentKey(const RE::ExtraDataList* a_extraList);
+[[nodiscard]] std::optional<ExtraListIdentity> ReadExtraListIdentity(const RE::ExtraDataList* a_extraList);
+[[nodiscard]] std::optional<ExtraListIdentity> EnsureExtraListIdentity(
+    RE::Actor& a_actor,
+    const RE::TESBoundObject& a_object,
+    RE::ExtraDataList& a_extraList
+);
 [[nodiscard]] bool MatchesCustomEnchantmentKey(const RE::ExtraDataList* a_extraList, const CustomEnchantmentKey& a_key);
+[[nodiscard]] bool MatchesExtraListIdentity(const RE::ExtraDataList* a_extraList, const ExtraListIdentity& a_identity);
+[[nodiscard]] bool MatchesCustomSelection(
+    const RE::ExtraDataList* a_extraList,
+    const CustomEnchantmentKey& a_key,
+    const std::optional<ExtraListIdentity>& a_identity
+);
 [[nodiscard]] bool IsRightWorn(const RE::ExtraDataList* a_extraList);
 [[nodiscard]] std::optional<CustomEnchantmentData> ReadCustomEnchantment(const RE::ExtraDataList& a_extraList);
 [[nodiscard]] bool MirrorCustomEnchantment(RE::ExtraDataList& a_target, const RE::ExtraDataList& a_source);
 [[nodiscard]] RE::InventoryEntryData* FindEntry(RE::Actor& a_actor, const RE::TESBoundObject& a_object);
 [[nodiscard]] std::int32_t GetCount(RE::Actor& a_actor, const RE::TESBoundObject& a_object);
-[[nodiscard]] CustomMatchState FindCustomMatches(RE::InventoryEntryData* a_entry, const CustomEnchantmentKey& a_key);
+[[nodiscard]] CustomMatchState FindCustomMatches(
+    RE::InventoryEntryData* a_entry,
+    const CustomEnchantmentKey& a_key,
+    const std::optional<ExtraListIdentity>& a_identity = std::nullopt
+);
 [[nodiscard]] CustomMatchState FindSourceMatches(
     RE::Actor& a_actor,
     const RE::TESObjectARMO& a_ring,
-    const CustomEnchantmentKey& a_key
+    const CustomEnchantmentKey& a_key,
+    const std::optional<ExtraListIdentity>& a_identity = std::nullopt
 );
 [[nodiscard]] EntryCustomSelection ResolveCustomSelection(RE::InventoryEntryData& a_entry);
 [[nodiscard]] RE::TESObjectARMO* AsRing(RE::TESBoundObject* a_object);
