@@ -1,19 +1,30 @@
 #include "Selection.h"
 
-#include "BondOfMatrimony.h"
-#include "ClonedEquipment.h"
-#include "Inventory.h"
-#include "Settings.h"
+#include "Forms.h"
+#include "RingFootprints.h"
+#include "RingSounds.h"
 #include "UI.h"
+#include "VirtualRings.h"
 
-#include <RE/S/SendUIMessage.h>
-
+#include <algorithm>
+#include <array>
+#include <mutex>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 namespace Selection {
 namespace {
     std::mutex g_lock;
-    std::array<State, kDisplaySlots.size()> g_selections;
+    Snapshot g_snapshot;
+
+    [[nodiscard]] RE::PlayerCharacter* GetPlayer() {
+        return RE::PlayerCharacter::GetSingleton();
+    }
+
+    [[nodiscard]] RE::TESObjectARMO* LookupSourceRing(const RE::FormID a_sourceFormID) {
+        return Inventory::AsRing(RE::TESForm::LookupByID(a_sourceFormID));
+    }
 
     [[nodiscard]] RE::FormID ResolveFormID(
         SKSE::SerializationInterface& a_intfc,
@@ -26,245 +37,200 @@ namespace {
 
         RE::FormID resolvedFormID = 0;
         if (!a_intfc.ResolveFormID(a_formID, resolvedFormID)) {
-            logger::warn("Serialization: left-ring resolve failed | field={} | form={:08X}", a_label, a_formID);
+            logger::warn("Serialization: virtual ring resolve failed | field={} | form={:08X}", a_label, a_formID);
             return 0;
         }
         return resolvedFormID;
     }
 
-    void NotifyInventoryChanged(RE::Actor& a_actor, const RE::TESObjectARMO* a_ring) {
-        RE::SendUIMessage::SendInventoryUpdateMessage(std::addressof(a_actor), a_ring);
-        UI::RefreshRows();
-    }
-
-    [[nodiscard]] RE::PlayerCharacter* GetPlayer() {
-        return RE::PlayerCharacter::GetSingleton();
-    }
-
-    [[nodiscard]] RE::TESObjectARMO* LookupSourceRing(const RE::FormID a_sourceFormID) {
-        return RE::TESForm::LookupByID<RE::TESObjectARMO>(a_sourceFormID);
-    }
-
-    void RequestEquipmentRefresh(const bool a_playSounds, const DisplaySlot a_channel) {
-        if (a_playSounds) {
-            ClonedEquipment::RequestRefreshWithSounds(a_channel);
-            return;
+    [[nodiscard]] bool CanUseVirtualTarget(const RingTarget a_target, const std::string_view a_action) {
+        if (IsVirtualRingTarget(a_target)) {
+            return true;
         }
 
-        ClonedEquipment::RequestRefresh();
+        logger::warn("Selection: virtual target rejected | action={} | target={}", a_action, TargetLabel(a_target));
+        return false;
     }
 
-    void ClearVirtualLeftSelection(RE::Actor& a_actor, const RE::TESObjectARMO& a_ring, const DisplaySlot a_channel) {
-        Clear(a_channel);
-        ClonedEquipment::Clear(a_channel);
-        NotifyInventoryChanged(a_actor, std::addressof(a_ring));
-    }
-
-    struct StoredCustomIdentityResult {
-        std::optional<Inventory::ExtraListIdentity> identity;
-        bool valid {true};
-    };
-
-    [[nodiscard]] StoredCustomIdentityResult ResolveStoredCustomIdentity(
-        SKSE::SerializationInterface& a_intfc,
-        const DisplaySlot a_channel,
-        const State& a_storedState,
-        const RE::FormID a_sourceFormID
+    [[nodiscard]] RingFootprints::RingTargetMask GetOccupiedTargets(
+        const State& a_selection,
+        const RingTarget a_target
     ) {
-        auto identity = a_storedState.customIdentity;
-        if (!identity) {
-            return {};
+        if (const auto* ring = LookupSourceRing(a_selection.sourceFormID)) {
+            return RingFootprints::GetOccupiedTargets(*ring, a_target);
         }
 
-        identity->baseID = ResolveFormID(a_intfc, identity->baseID, "custom unique base"sv);
-
-        if (!identity->IsValid()) {
-            logger::warn(
-                "Serialization: custom selection cleared | channel={} | source={:08X} | uniqueBase={:08X} | uniqueID={} | reason=uniqueIDResolveFailed",
-                DisplaySlotLabel(a_channel),
-                a_sourceFormID,
-                a_storedState.customIdentity->baseID,
-                a_storedState.customIdentity->uniqueID
-            );
-            return StoredCustomIdentityResult {
-                .valid = false,
-            };
-        }
-
-        return StoredCustomIdentityResult {
-            .identity = identity,
-        };
+        RingFootprints::RingTargetMask mask;
+        mask.Add(a_target);
+        return mask;
     }
 
-    void EnforceSameSourceInvariant(const DisplaySlot a_channel) {
-        auto* player = GetPlayer();
-        if (!player) {
-            return;
-        }
-
-        const auto selection = Get(a_channel);
-        auto* ring = GetSource(a_channel);
-        if (!ring) {
-            return;
-        }
-
-        const auto sourceState = Inventory::GetSourceState(*player, *ring);
-        if (sourceState.count <= 0) {
-            ClearVirtualLeftSelection(*player, *ring, a_channel);
-            return;
-        }
-
-        if (selection.kind == Kind::kCustomEnchantment) {
-            const auto customKey = selection.GetCustomKey();
-            const auto
-                sourceMatches = Inventory::FindSourceMatches(*player, *ring, customKey, selection.GetCustomIdentity());
-            if (!sourceMatches.HasMatch()) {
-                ClearVirtualLeftSelection(*player, *ring, a_channel);
-                return;
-            }
-
-            if (sourceMatches.rightWornExtraList && !sourceMatches.CanWearSameKeyInBothHands()) {
-                ClearVirtualLeftSelection(*player, *ring, a_channel);
-            }
-            return;
-        }
-
-        if (sourceState.rightWorn && !sourceState.CanWearSameFormInBothHands()) {
-            ClearVirtualLeftSelection(*player, *ring, a_channel);
-        }
-    }
-
-    void MoveRightToLeft(const RE::FormID a_sourceFormID, const DisplaySlot a_channel, const bool a_playSounds) {
-        auto* player = GetPlayer();
-        if (!player) {
-            return;
-        }
-
-        auto* ring = LookupSourceRing(a_sourceFormID);
-        if (!ring) {
-            return;
-        }
-
-        auto sourceState = Inventory::GetSourceState(*player, *ring);
-        if (sourceState.count <= 0) {
-            if (GetFormID(a_channel) == a_sourceFormID) {
-                ClearVirtualLeftSelection(*player, *ring, a_channel);
-            }
-            return;
-        }
-
-        auto realInventoryChanged = false;
-        if (sourceState.rightWorn && !sourceState.CanWearSameFormInBothHands()) {
-            if (!Inventory::UnequipRightWornSource(*player, *ring)) {
-                NotifyInventoryChanged(*player, ring);
-                return;
-            }
-
-            realInventoryChanged = true;
-            sourceState = Inventory::GetSourceState(*player, *ring);
-            if (sourceState.rightWorn) {
-                NotifyInventoryChanged(*player, ring);
-                return;
-            }
-        }
-
-        Set(ring, a_channel);
-        RequestEquipmentRefresh(a_playSounds, a_channel);
-
-        if (realInventoryChanged) {
-            NotifyInventoryChanged(*player, ring);
-        } else {
-            UI::RefreshRows();
-        }
-    }
-
-    void MoveRightToLeftCustom(
-        const RE::FormID a_sourceFormID,
-        const Inventory::CustomEnchantmentKey& a_customKey,
-        const std::optional<Inventory::ExtraListIdentity>& a_customIdentity,
-        const DisplaySlot a_channel,
-        const bool a_playSounds
+    [[nodiscard]] std::vector<RingTarget> FindConflictingTargets(
+        const Snapshot& a_snapshot,
+        const RingTarget a_target,
+        const RingFootprints::RingTargetMask& a_occupiedTargets
     ) {
-        auto* player = GetPlayer();
-        if (!player) {
-            return;
-        }
-
-        auto* ring = LookupSourceRing(a_sourceFormID);
-        if (!ring) {
-            return;
-        }
-
-        auto sourceMatches = Inventory::FindSourceMatches(*player, *ring, a_customKey, a_customIdentity);
-        if (!sourceMatches.HasMatch()) {
-            NotifyInventoryChanged(*player, ring);
-            return;
-        }
-
-        auto realInventoryChanged = false;
-        if (sourceMatches.rightWornExtraList && !sourceMatches.CanWearSameKeyInBothHands()) {
-            auto* equipManager = RE::ActorEquipManager::GetSingleton();
-            if (!equipManager) {
-                NotifyInventoryChanged(*player, ring);
-                return;
+        std::vector<RingTarget> conflicts;
+        for (const auto target : kVirtualRingTargets) {
+            if (target == a_target) {
+                continue;
             }
 
-            equipManager->UnequipObject(
-                player,
-                ring,
-                sourceMatches.rightWornExtraList,
-                1,
-                nullptr,
-                true,
-                false,
-                false,
-                true,
-                nullptr
-            );
-            realInventoryChanged = true;
+            const auto& selection = a_snapshot.targets[ToIndex(target)];
+            if (selection.kind == Kind::kNone || selection.sourceFormID == 0) {
+                continue;
+            }
 
-            sourceMatches = Inventory::FindSourceMatches(*player, *ring, a_customKey, a_customIdentity);
-            if (!sourceMatches.HasMatch()
-                || (sourceMatches.rightWornExtraList && !sourceMatches.CanWearSameKeyInBothHands())) {
-                NotifyInventoryChanged(*player, ring);
-                return;
+            if (a_occupiedTargets.Intersects(GetOccupiedTargets(selection, target))) {
+                conflicts.push_back(target);
             }
         }
 
-        SetCustom(*ring, a_customKey, a_customIdentity, a_channel);
-        RequestEquipmentRefresh(a_playSounds, a_channel);
+        return conflicts;
+    }
 
-        if (realInventoryChanged) {
-            NotifyInventoryChanged(*player, ring);
-        } else {
-            UI::RefreshRows();
+    [[nodiscard]] bool CanOccupyTargets(
+        const RingFootprints::RingTargetMask& a_occupiedTargets,
+        const RingTarget a_target,
+        const RE::TESObjectARMO& a_ring,
+        const std::string_view a_action
+    ) {
+        if (!a_occupiedTargets.Contains(kVanillaRingTarget)) {
+            return true;
+        }
+
+        logger::warn(
+            "Selection: virtual target rejected | action={} | target={} | source={:08X} | reason=vanillaTargetOccupied",
+            a_action,
+            TargetLabel(a_target),
+            a_ring.GetFormID()
+        );
+        return false;
+    }
+
+    void ClearConflictingSelections(const std::vector<RingTarget>& a_conflicts) {
+        for (const auto target : a_conflicts) {
+            g_snapshot.targets[ToIndex(target)] = {};
         }
     }
 
-    void MoveLeftToRight(
+    void ClearVirtualSelection(RE::Actor& a_actor, const RE::TESObjectARMO& a_ring, const RingTarget a_target) {
+        Clear(a_target);
+        VirtualRings::Clear(a_target);
+        UI::RefreshItemRowsForRing(a_actor, std::addressof(a_ring));
+    }
+
+    [[nodiscard]] std::uint32_t CountMatchingSelections(
         const RE::FormID a_sourceFormID,
         const std::optional<Inventory::CustomEnchantmentKey>& a_customKey,
-        const std::optional<Inventory::ExtraListIdentity>& a_customIdentity,
+        const std::optional<Inventory::ExtraListIdentity>& a_identity,
+        const std::optional<RingTarget> a_excludedTarget = std::nullopt
+    ) {
+        const auto snapshot = GetSnapshot();
+        auto count = std::uint32_t {0};
+        for (const auto target : kVirtualRingTargets) {
+            if (a_excludedTarget && *a_excludedTarget == target) {
+                continue;
+            }
+
+            const auto& selection = snapshot.targets[ToIndex(target)];
+            if (!a_customKey) {
+                if (selection.MatchesForm(a_sourceFormID)) {
+                    ++count;
+                }
+                continue;
+            }
+
+            if (selection.MatchesCustomEnchantment(a_sourceFormID, *a_customKey, a_identity)) {
+                ++count;
+            }
+        }
+
+        return count;
+    }
+
+    [[nodiscard]] std::optional<RingTarget> FindVirtualTargetForVanillaRingSlotEquip(
+        RE::Actor& a_actor,
+        const RE::TESObjectARMO& a_ring,
+        const RE::ObjectEquipParams& a_params,
+        std::optional<Inventory::CustomEnchantmentKey>& a_customKey,
+        std::optional<Inventory::ExtraListIdentity>& a_identity
+    ) {
+        const auto sourceFormID = a_ring.GetFormID();
+        const auto snapshot = GetSnapshot();
+        for (const auto target : kVirtualRingTargets) {
+            const auto& selection = snapshot.targets[ToIndex(target)];
+            if (!selection.MatchesSource(sourceFormID)) {
+                continue;
+            }
+
+            if (selection.kind == Kind::kCustomEnchantment) {
+                const auto key = selection.GetCustomKey();
+                const auto identity = selection.GetCustomIdentity();
+                if (!a_params.extraDataList) {
+                    continue;
+                }
+
+                if (!Inventory::MatchesCustomSelection(a_params.extraDataList, key, identity)) {
+                    continue;
+                }
+
+                const auto sourceMatches = Inventory::FindSourceMatches(a_actor, a_ring, key, identity);
+                const auto selectedCopies = CountMatchingSelections(sourceFormID, key, identity, target);
+                if (std::cmp_greater(sourceMatches.count, selectedCopies + 1)) {
+                    continue;
+                }
+
+                a_customKey = key;
+                a_identity = identity;
+                return target;
+            }
+
+            if (Inventory::HasCustomEnchantment(a_params.extraDataList)) {
+                continue;
+            }
+
+            const auto sourceMatches = Inventory::FindFormOnlyMatches(a_actor, a_ring);
+            const auto selectedCopies = CountMatchingSelections(sourceFormID, std::nullopt, std::nullopt, target);
+            if (std::cmp_greater(sourceMatches.count, selectedCopies + 1)) {
+                continue;
+            }
+
+            return target;
+        }
+
+        return std::nullopt;
+    }
+
+    [[nodiscard]] RE::FormID EquipSlotFormID(const RE::ObjectEquipParams& a_params) {
+        return a_params.equipSlot ? a_params.equipSlot->GetFormID() : RE::FormID {0};
+    }
+
+    [[nodiscard]] bool IsInVanillaRingSlot(
+        RE::Actor& a_actor,
+        const RE::TESObjectARMO& a_ring,
+        const std::optional<Inventory::CustomEnchantmentKey>& a_customKey,
+        const std::optional<Inventory::ExtraListIdentity>& a_customIdentity
+    ) {
+        if (a_customKey) {
+            return Inventory::FindSourceMatches(a_actor, a_ring, *a_customKey, a_customIdentity).rightWornExtraList
+                   != nullptr;
+        }
+
+        return Inventory::FindFormOnlyMatches(a_actor, a_ring).rightWorn;
+    }
+
+    void MoveVirtualToVanillaRingSlot(
+        const RE::FormID a_sourceFormID,
+        std::optional<Inventory::CustomEnchantmentKey> a_customKey,
+        std::optional<Inventory::ExtraListIdentity> a_customIdentity,
         const RE::FormID a_equipSlotFormID,
         const bool a_forceEquip,
-        const bool a_playSounds,
-        const DisplaySlot a_channel
+        const RingTarget a_target
     ) {
         auto* player = GetPlayer();
-        if (!player) {
-            return;
-        }
-
         auto* ring = LookupSourceRing(a_sourceFormID);
-        if (!ring) {
-            return;
-        }
-
-        const auto sourceState = Inventory::GetSourceState(*player, *ring);
-        if (sourceState.count <= 0) {
-            if (Get(a_channel).MatchesSource(a_sourceFormID)) {
-                ClearVirtualLeftSelection(*player, *ring, a_channel);
-            }
+        if (!player || !ring) {
             return;
         }
 
@@ -273,393 +239,515 @@ namespace {
             const auto sourceMatches = Inventory::FindSourceMatches(*player, *ring, *a_customKey, a_customIdentity);
             equipExtraList = sourceMatches.firstExtraList;
             if (!equipExtraList) {
-                if (Get(a_channel).MatchesCustomEnchantment(a_sourceFormID, *a_customKey, a_customIdentity)) {
-                    ClearVirtualLeftSelection(*player, *ring, a_channel);
-                }
-                NotifyInventoryChanged(*player, ring);
+                ClearVirtualSelection(*player, *ring, a_target);
                 return;
             }
         }
 
-        const auto selection = Get(a_channel);
+        const auto selection = Get(a_target);
         if ((!a_customKey && selection.MatchesForm(a_sourceFormID))
             || (a_customKey && selection.MatchesCustomEnchantment(a_sourceFormID, *a_customKey, a_customIdentity))) {
-            ClearVirtualLeftSelection(*player, *ring, a_channel);
+            Clear(a_target);
+            VirtualRings::Clear(a_target);
         }
 
         auto* equipManager = RE::ActorEquipManager::GetSingleton();
         if (!equipManager) {
-            NotifyInventoryChanged(*player, ring);
+            UI::RefreshItemRowsForRing(*player, ring);
             return;
         }
 
         const auto* equipSlot = a_equipSlotFormID == 0 ? nullptr
                                                        : RE::TESForm::LookupByID<RE::BGSEquipSlot>(a_equipSlotFormID);
         if (a_equipSlotFormID != 0 && !equipSlot) {
-            NotifyInventoryChanged(*player, ring);
+            UI::RefreshItemRowsForRing(*player, ring);
             return;
         }
 
-        equipManager->EquipObject(player, ring, equipExtraList, 1, equipSlot, true, a_forceEquip, a_playSounds, true);
-        NotifyInventoryChanged(*player, ring);
-    }
-
-    struct SelectedDisplaySlot {
-        DisplaySlot channel {DisplaySlot::kRegular};
-        State selection;
-    };
-
-    [[nodiscard]] std::optional<SelectedDisplaySlot> FindSelectedChannelForSource(const RE::FormID a_sourceFormID) {
-        auto selection = Get(DisplaySlot::kRegular);
-        if (selection.MatchesSource(a_sourceFormID)) {
-            return SelectedDisplaySlot {
-                .channel = DisplaySlot::kRegular,
-                .selection = selection,
-            };
+        equipManager->EquipObject(player, ring, equipExtraList, 1, equipSlot, true, a_forceEquip, false, true);
+        if (IsInVanillaRingSlot(*player, *ring, a_customKey, a_customIdentity)) {
+            RingSounds::Play(*player, *ring, RingSounds::Event::kEquip);
         }
-
-        selection = Get(DisplaySlot::kBond);
-        if (!selection.MatchesSource(a_sourceFormID)) {
-            return std::nullopt;
-        }
-
-        return SelectedDisplaySlot {
-            .channel = DisplaySlot::kBond,
-            .selection = selection,
-        };
+        UI::RefreshItemRowsForRing(*player, ring);
     }
 
-    [[nodiscard]] RE::FormID EquipSlotFormID(const RE::ObjectEquipParams& a_params) {
-        return a_params.equipSlot ? a_params.equipSlot->GetFormID() : RE::FormID {0};
-    }
-
-    void QueueMoveLeftToRight(
+    void QueueMoveVirtualToVanillaRingSlot(
         const RE::FormID a_sourceFormID,
         std::optional<Inventory::CustomEnchantmentKey> a_customKey,
         std::optional<Inventory::ExtraListIdentity> a_customIdentity,
         const RE::ObjectEquipParams& a_params,
-        const DisplaySlot a_channel
+        const RingTarget a_target
     ) {
         stl::add_task([a_sourceFormID,
                           customKey = std::move(a_customKey),
                           customIdentity = a_customIdentity,
                           equipSlotFormID = EquipSlotFormID(a_params),
                           forceEquip = a_params.forceEquip,
-                          playSounds = a_params.playEquipSounds,
-                          a_channel] {
-            MoveLeftToRight(
+                          a_target] {
+            MoveVirtualToVanillaRingSlot(
                 a_sourceFormID,
                 customKey,
                 customIdentity,
                 equipSlotFormID,
                 forceEquip,
-                playSounds,
-                a_channel
+                a_target
             );
         });
     }
 
-    [[nodiscard]] bool InterceptCustomRightEquip(
-        RE::Actor& a_actor,
-        const RE::TESObjectARMO& a_ring,
-        const State& a_selection,
-        const RE::ObjectEquipParams& a_params,
-        const DisplaySlot a_channel
-    ) {
-        const auto sourceFormID = a_ring.GetFormID();
-        const auto selectedCustomKey = a_selection.GetCustomKey();
-        const auto selectedCustomIdentity = a_selection.GetCustomIdentity();
-        if (a_params.extraDataList) {
-            const auto paramsMatch = Inventory::MatchesCustomSelection(
-                a_params.extraDataList,
-                selectedCustomKey,
-                selectedCustomIdentity
-            );
-            if (!paramsMatch) {
-                return false;
-            }
-
-            const auto sourceMatches = Inventory::FindSourceMatches(
-                a_actor,
-                a_ring,
-                selectedCustomKey,
-                selectedCustomIdentity
-            );
-            if (!selectedCustomIdentity && sourceMatches.CanWearSameKeyInBothHands()) {
-                return false;
-            }
-
-            QueueMoveLeftToRight(sourceFormID, selectedCustomKey, selectedCustomIdentity, a_params, a_channel);
-            return true;
+    void EnforceTargetInvariant(RE::Actor& a_actor, const RingTarget a_target) {
+        const auto selection = Get(a_target);
+        auto* ring = GetSource(a_target);
+        if (!ring || selection.kind == Kind::kNone) {
+            return;
         }
 
-        const auto sourceState = Inventory::GetSourceState(a_actor, a_ring);
-        if (sourceState.CanWearSameFormInBothHands()) {
-            return false;
+        if (RingFootprints::GetOccupiedTargets(*ring, a_target).Contains(kVanillaRingTarget)) {
+            ClearVirtualSelection(a_actor, *ring, a_target);
+            return;
         }
 
-        QueueMoveLeftToRight(sourceFormID, selectedCustomKey, selectedCustomIdentity, a_params, a_channel);
+        if (selection.kind == Kind::kCustomEnchantment) {
+            const auto key = selection.GetCustomKey();
+            const auto identity = selection.GetCustomIdentity();
+            const auto sourceMatches = Inventory::FindSourceMatches(a_actor, *ring, key, identity);
+            const auto selectedCopies = CountMatchingSelections(ring->GetFormID(), key, identity);
+            const auto vanillaSlotClaim = sourceMatches.rightWornExtraList ? 1u : 0u;
+            const auto requiredMatchingCount = selectedCopies + vanillaSlotClaim;
+            const auto shouldClear = !sourceMatches.HasMatch()
+                                     || std::cmp_less(sourceMatches.count, requiredMatchingCount);
+            if (shouldClear) {
+                ClearVirtualSelection(a_actor, *ring, a_target);
+            }
+            return;
+        }
+
+        const auto sourceMatches = Inventory::FindFormOnlyMatches(a_actor, *ring);
+        const auto selectedCopies = CountMatchingSelections(ring->GetFormID(), std::nullopt, std::nullopt);
+        const auto vanillaSlotClaim = sourceMatches.rightWorn ? 1u : 0u;
+        const auto requiredInventoryCount = selectedCopies + vanillaSlotClaim;
+        const auto shouldClear = !sourceMatches.HasMatch()
+                                 || std::cmp_less(sourceMatches.count, requiredInventoryCount);
+        if (shouldClear) {
+            ClearVirtualSelection(a_actor, *ring, a_target);
+        }
+    }
+
+    [[nodiscard]] bool SnapshotReferencesBaseObject(const Snapshot& a_snapshot, const RE::FormID a_baseObject) {
+        return std::ranges::any_of(a_snapshot.targets, [a_baseObject](const auto& a_selection) {
+            return a_selection.sourceFormID == a_baseObject;
+        });
+    }
+}
+
+bool Set(RE::TESObjectARMO* a_ring, const RingTarget a_target) {
+    if (!CanUseVirtualTarget(a_target, "set"sv)) {
+        return false;
+    }
+
+    if (!a_ring) {
+        Clear(a_target);
         return true;
     }
-    void ClearRestoreForChannel(const DisplaySlot a_channel) {
-        ArmorClones::ClearRestore(a_channel);
+
+    const auto occupiedTargets = RingFootprints::GetOccupiedTargets(*a_ring, a_target);
+    if (!CanOccupyTargets(occupiedTargets, a_target, *a_ring, "set"sv)) {
+        return false;
     }
 
-    void SetSelection(RE::TESObjectARMO* a_ring, const DisplaySlot a_channel) {
-        std::scoped_lock lock(g_lock);
-        if (a_ring) {
-            g_selections[ToIndex(a_channel)] = State {
-                .kind = Kind::kFormOnly,
-                .sourceFormID = a_ring->GetFormID(),
-            };
-        } else {
-            g_selections[ToIndex(a_channel)] = {};
-        }
-        ClearRestoreForChannel(a_channel);
-    }
+    const auto conflicts = FindConflictingTargets(GetSnapshot(), a_target, occupiedTargets);
 
-    void SetCustomSelection(
-        RE::TESObjectARMO& a_ring,
-        Inventory::CustomEnchantmentKey a_key,
-        std::optional<Inventory::ExtraListIdentity> a_identity,
-        const DisplaySlot a_channel
-    ) {
-        std::scoped_lock lock(g_lock);
-        g_selections[ToIndex(a_channel)] = State {
-            .kind = Kind::kCustomEnchantment,
-            .sourceFormID = a_ring.GetFormID(),
-            .customKey = std::move(a_key),
-            .customIdentity = a_identity,
-        };
-        ClearRestoreForChannel(a_channel);
-    }
+    std::scoped_lock lock(g_lock);
+    auto& selection = g_snapshot.targets[ToIndex(a_target)];
+    const auto restoredEffectSourceFormID = selection.sourceFormID == a_ring->GetFormID()
+                                                ? selection.restoredEffectSourceFormID
+                                                : RE::FormID {0};
+    ClearConflictingSelections(conflicts);
+    selection = State {
+        .kind = Kind::kFormOnly,
+        .sourceFormID = a_ring->GetFormID(),
+        .restoredEffectSourceFormID = restoredEffectSourceFormID,
+    };
+    return true;
 }
 
-void Set(RE::TESObjectARMO* a_ring, const DisplaySlot a_channel) {
-    SetSelection(a_ring, a_channel);
-}
-
-void SetCustom(
+bool SetCustom(
     RE::TESObjectARMO& a_ring,
     Inventory::CustomEnchantmentKey a_key,
     std::optional<Inventory::ExtraListIdentity> a_identity,
-    const DisplaySlot a_channel
+    const RingTarget a_target
 ) {
-    SetCustomSelection(a_ring, std::move(a_key), a_identity, a_channel);
-}
+    if (!CanUseVirtualTarget(a_target, "setCustom"sv)) {
+        return false;
+    }
 
-void Clear(const DisplaySlot a_channel) {
-    Set(nullptr, a_channel);
-}
+    const auto occupiedTargets = RingFootprints::GetOccupiedTargets(a_ring, a_target);
+    if (!CanOccupyTargets(occupiedTargets, a_target, a_ring, "setCustom"sv)) {
+        return false;
+    }
 
-RE::TESObjectARMO* GetSource(const DisplaySlot a_channel) {
-    const auto formID = GetFormID(a_channel);
-    return Inventory::AsRing(RE::TESForm::LookupByID(formID));
-}
+    const auto conflicts = FindConflictingTargets(GetSnapshot(), a_target, occupiedTargets);
 
-RE::FormID GetFormID(const DisplaySlot a_channel) {
     std::scoped_lock lock(g_lock);
-    return g_selections[ToIndex(a_channel)].sourceFormID;
+    const auto& oldSelection = g_snapshot.targets[ToIndex(a_target)];
+    const auto restoredEffectSourceFormID = oldSelection.sourceFormID == a_ring.GetFormID()
+                                                ? oldSelection.restoredEffectSourceFormID
+                                                : RE::FormID {0};
+    ClearConflictingSelections(conflicts);
+    g_snapshot.targets[ToIndex(a_target)] = State {
+        .kind = Kind::kCustomEnchantment,
+        .sourceFormID = a_ring.GetFormID(),
+        .restoredEffectSourceFormID = restoredEffectSourceFormID,
+        .customKey = std::move(a_key),
+        .customIdentity = a_identity,
+    };
+    return true;
 }
 
-State Get(const DisplaySlot a_channel) {
+void Clear(const RingTarget a_target) {
     std::scoped_lock lock(g_lock);
-    return g_selections[ToIndex(a_channel)];
+    g_snapshot.targets[ToIndex(a_target)] = {};
+}
+
+void SetRestoredEffectSourceFormID(const RingTarget a_target, const RE::FormID a_effectSourceFormID) {
+    if (!CanUseVirtualTarget(a_target, "setRestoredEffectSource"sv)) {
+        return;
+    }
+
+    std::scoped_lock lock(g_lock);
+    g_snapshot.targets[ToIndex(a_target)].restoredEffectSourceFormID = a_effectSourceFormID;
+}
+
+RE::TESObjectARMO* GetSource(const RingTarget a_target) {
+    if (!IsVirtualRingTarget(a_target)) {
+        return nullptr;
+    }
+
+    return LookupSourceRing(GetFormID(a_target));
+}
+
+RE::FormID GetFormID(const RingTarget a_target) {
+    if (!IsVirtualRingTarget(a_target)) {
+        return 0;
+    }
+
+    std::scoped_lock lock(g_lock);
+    return g_snapshot.targets[ToIndex(a_target)].sourceFormID;
+}
+
+State Get(const RingTarget a_target) {
+    if (!IsVirtualRingTarget(a_target)) {
+        return {};
+    }
+
+    std::scoped_lock lock(g_lock);
+    return g_snapshot.targets[ToIndex(a_target)];
+}
+
+bool IsSelected(
+    const RingTarget a_target,
+    const RE::FormID a_sourceFormID,
+    const std::optional<Inventory::CustomEnchantmentKey>& a_customKey,
+    const std::optional<Inventory::ExtraListIdentity>& a_identity
+) {
+    const auto selection = Get(a_target);
+    if (a_customKey) {
+        return selection.MatchesCustomEnchantment(a_sourceFormID, *a_customKey, a_identity);
+    }
+
+    return selection.MatchesForm(a_sourceFormID);
 }
 
 void Load(const Snapshot& a_state, SKSE::SerializationInterface& a_intfc) {
-    std::scoped_lock lock(g_lock);
-    const auto loadSelection = [&](const DisplaySlot a_channel, const State& a_storedState) {
-        g_selections[ToIndex(a_channel)] = {};
-        ArmorClones::ClearRestore(a_channel);
-
-        if (a_storedState.kind == Kind::kNone || a_storedState.sourceFormID == 0) {
-            return;
+    Snapshot nextSnapshot;
+    for (const auto target : kVirtualRingTargets) {
+        const auto& storedState = a_state.targets[ToIndex(target)];
+        auto& nextState = nextSnapshot.targets[ToIndex(target)];
+        if (storedState.kind == Kind::kNone || storedState.sourceFormID == 0) {
+            continue;
         }
 
-        const auto sourceFormID = ResolveFormID(a_intfc, a_storedState.sourceFormID, "source form"sv);
+        const auto sourceFormID = ResolveFormID(a_intfc, storedState.sourceFormID, "source form"sv);
         if (sourceFormID == 0) {
-            return;
+            continue;
         }
 
-        if (a_channel
-            == DisplaySlot::kBond
-            && (!Settings::GetSingleton()->IsBondOfMatrimonyEnabled() || !BondOfMatrimony::IsBond(sourceFormID))) {
-            logger::warn(
-                "Serialization: Bond selection cleared | source={:08X} | reason=featureDisabledOrSourceMismatch",
-                sourceFormID
-            );
-            return;
-        }
+        const auto restoredEffectSourceFormID = ResolveFormID(
+            a_intfc,
+            storedState.restoredEffectSourceFormID,
+            "effect source form"sv
+        );
 
-        if (a_storedState.kind == Kind::kFormOnly) {
-            g_selections[ToIndex(a_channel)] = State {
+        if (storedState.kind == Kind::kFormOnly) {
+            nextState = State {
                 .kind = Kind::kFormOnly,
                 .sourceFormID = sourceFormID,
+                .restoredEffectSourceFormID = restoredEffectSourceFormID,
             };
-        } else if (a_storedState.kind == Kind::kCustomEnchantment) {
-            auto customKey = a_storedState.customKey;
-            customKey.enchantmentFormID = ResolveFormID(a_intfc, customKey.enchantmentFormID, "custom enchantment"sv);
-            if (customKey.enchantmentFormID == 0) {
-                logger::warn(
-                    "Serialization: custom selection cleared | channel={} | source={:08X} | enchantment={:08X} | charge={} | reason=enchantmentResolveFailed",
-                    DisplaySlotLabel(a_channel),
-                    sourceFormID,
-                    a_storedState.customKey.enchantmentFormID,
-                    a_storedState.customKey.charge
-                );
-                return;
-            }
-
-            if (!RE::TESForm::LookupByID<RE::EnchantmentItem>(customKey.enchantmentFormID)) {
-                logger::warn(
-                    "Serialization: custom selection cleared | channel={} | source={:08X} | enchantment={:08X} | charge={} | reason=enchantmentMissing",
-                    DisplaySlotLabel(a_channel),
-                    sourceFormID,
-                    customKey.enchantmentFormID,
-                    customKey.charge
-                );
-                return;
-            }
-
-            const auto customIdentity = ResolveStoredCustomIdentity(a_intfc, a_channel, a_storedState, sourceFormID);
-            if (!customIdentity.valid) {
-                return;
-            }
-
-            g_selections[ToIndex(a_channel)] = State {
-                .kind = Kind::kCustomEnchantment,
-                .sourceFormID = sourceFormID,
-                .customKey = std::move(customKey),
-                .customIdentity = customIdentity.identity,
-            };
-        } else {
-            logger::warn(
-                "Serialization: selection cleared | channel={} | source={:08X} | kind={} | reason=unsupportedKind",
-                DisplaySlotLabel(a_channel),
-                sourceFormID,
-                std::to_underlying(a_storedState.kind)
-            );
-            return;
+            continue;
         }
 
-        ArmorClones::RequireRestore(a_channel, g_selections[ToIndex(a_channel)].sourceFormID);
-    };
+        if (storedState.kind != Kind::kCustomEnchantment) {
+            logger::warn(
+                "Serialization: virtual selection cleared | target={} | source={:08X} | kind={} | reason=unsupportedKind",
+                TargetLabel(target),
+                sourceFormID,
+                std::to_underlying(storedState.kind)
+            );
+            continue;
+        }
 
-    loadSelection(DisplaySlot::kRegular, a_state.regular);
-    loadSelection(DisplaySlot::kBond, a_state.bond);
-    if (Settings::GetSingleton()->IsBondOfMatrimonyEnabled()
-        && BondOfMatrimony::IsBond(g_selections[ToIndex(DisplaySlot::kRegular)].sourceFormID)) {
-        g_selections[ToIndex(DisplaySlot::kRegular)] = {};
-        ArmorClones::ClearRestore(DisplaySlot::kRegular);
+        auto customKey = storedState.customKey;
+        customKey.enchantmentFormID = ResolveFormID(a_intfc, customKey.enchantmentFormID, "custom enchantment"sv);
+        if (customKey.enchantmentFormID
+            == 0
+            || !RE::TESForm::LookupByID<RE::EnchantmentItem>(customKey.enchantmentFormID)) {
+            logger::warn(
+                "Serialization: custom virtual selection cleared | target={} | source={:08X} | enchantment={:08X} | reason=enchantmentMissing",
+                TargetLabel(target),
+                sourceFormID,
+                storedState.customKey.enchantmentFormID
+            );
+            continue;
+        }
+
+        auto customIdentity = storedState.customIdentity;
+        if (customIdentity) {
+            customIdentity->baseID = ResolveFormID(a_intfc, customIdentity->baseID, "custom unique base"sv);
+            if (!customIdentity->IsValid()) {
+                logger::warn(
+                    "Serialization: custom virtual selection cleared | target={} | source={:08X} | reason=uniqueIDResolveFailed",
+                    TargetLabel(target),
+                    sourceFormID
+                );
+                continue;
+            }
+        }
+
+        nextState = State {
+            .kind = Kind::kCustomEnchantment,
+            .sourceFormID = sourceFormID,
+            .restoredEffectSourceFormID = restoredEffectSourceFormID,
+            .customKey = std::move(customKey),
+            .customIdentity = customIdentity,
+        };
     }
+
+    std::scoped_lock lock(g_lock);
+    g_snapshot = std::move(nextSnapshot);
 }
 
 Snapshot GetSnapshot() {
     std::scoped_lock lock(g_lock);
-    return Snapshot {
-        .regular = g_selections[ToIndex(DisplaySlot::kRegular)],
-        .bond = g_selections[ToIndex(DisplaySlot::kBond)],
-    };
-}
-
-std::vector<ArmorClones::CloneKey> GetCloneKeys() {
-    std::scoped_lock lock(g_lock);
-    std::vector<ArmorClones::CloneKey> keys;
-    keys.reserve(kDisplaySlots.size());
-    for (const auto channel : kDisplaySlots) {
-        const auto& selection = g_selections[ToIndex(channel)];
-        if (selection.sourceFormID != 0) {
-            keys.push_back(
-                ArmorClones::CloneKey {
-                    .channel = channel,
-                    .sourceArmorFormID = selection.sourceFormID,
-                }
-            );
-        }
-    }
-    return keys;
+    return g_snapshot;
 }
 
 void Revert() {
     std::scoped_lock lock(g_lock);
-    g_selections = {};
-    for (const auto channel : kDisplaySlots) {
-        ArmorClones::ClearRestore(channel);
-    }
+    g_snapshot = {};
 }
 
-void NormalizeAfterSettingsReload() {
-    std::scoped_lock lock(g_lock);
-    if (!Settings::GetSingleton()->IsBondOfMatrimonyEnabled()) {
-        g_selections[ToIndex(DisplaySlot::kBond)] = {};
-        ArmorClones::ClearRestore(DisplaySlot::kBond);
+VanillaRingSlotMoveResult MoveVanillaRingSlotFormToVirtual(const RE::FormID a_sourceFormID, const RingTarget a_target) {
+    VanillaRingSlotMoveResult result;
+    if (!CanUseVirtualTarget(a_target, "moveVanillaRingSlotFormToVirtual"sv)) {
+        return result;
+    }
+
+    auto* player = GetPlayer();
+    auto* ring = LookupSourceRing(a_sourceFormID);
+    if (!player || !ring) {
+        return result;
+    }
+
+    auto sourceMatches = Inventory::FindFormOnlyMatches(*player, *ring);
+    if (!sourceMatches.HasMatch()) {
+        if (GetFormID(a_target) == a_sourceFormID) {
+            ClearVirtualSelection(*player, *ring, a_target);
+        }
+        return result;
+    }
+
+    const auto selectedCopies = CountMatchingSelections(a_sourceFormID, std::nullopt, std::nullopt, a_target);
+    if (sourceMatches.rightWorn && std::cmp_less_equal(sourceMatches.count, selectedCopies + 1)) {
+        if (!Inventory::UnequipRightWornSource(*player, *ring)) {
+            return result;
+        }
+
+        result.inventoryChanged = true;
+        sourceMatches = Inventory::FindFormOnlyMatches(*player, *ring);
+        if (sourceMatches.rightWorn) {
+            return result;
+        }
+    }
+
+    if (!Set(ring, a_target)) {
+        return result;
+    }
+
+    VirtualRings::RequestRefresh(
+        VirtualRings::RefreshOptions {
+            .soundTarget = a_target,
+            .sound = RingSounds::Event::kEquip,
+        }
+    );
+
+    result.selectionChanged = true;
+    return result;
+}
+
+VanillaRingSlotMoveResult MoveVanillaRingSlotCustomToVirtual(
+    const RE::FormID a_sourceFormID,
+    const Inventory::CustomEnchantmentKey& a_customKey,
+    const std::optional<Inventory::ExtraListIdentity> a_customIdentity,
+    const RingTarget a_target
+) {
+    VanillaRingSlotMoveResult result;
+    if (!CanUseVirtualTarget(a_target, "moveVanillaRingSlotCustomToVirtual"sv)) {
+        return result;
+    }
+
+    auto* player = GetPlayer();
+    auto* ring = LookupSourceRing(a_sourceFormID);
+    if (!player || !ring) {
+        return result;
+    }
+
+    auto sourceMatches = Inventory::FindSourceMatches(*player, *ring, a_customKey, a_customIdentity);
+    if (!sourceMatches.HasMatch()) {
+        return result;
+    }
+
+    const auto selectedCopies = CountMatchingSelections(a_sourceFormID, a_customKey, a_customIdentity, a_target);
+    if (sourceMatches.rightWornExtraList && std::cmp_less_equal(sourceMatches.count, selectedCopies + 1)) {
+        auto* equipManager = RE::ActorEquipManager::GetSingleton();
+        if (!equipManager) {
+            return result;
+        }
+
+        equipManager->UnequipObject(
+            player,
+            ring,
+            sourceMatches.rightWornExtraList,
+            1,
+            nullptr,
+            true,
+            false,
+            false,
+            true,
+            nullptr
+        );
+        result.inventoryChanged = true;
+
+        sourceMatches = Inventory::FindSourceMatches(*player, *ring, a_customKey, a_customIdentity);
+        if (!sourceMatches.HasMatch()
+            || (sourceMatches.rightWornExtraList && std::cmp_less_equal(sourceMatches.count, selectedCopies + 1))) {
+            return result;
+        }
+    }
+
+    if (!SetCustom(*ring, a_customKey, a_customIdentity, a_target)) {
+        return result;
+    }
+
+    VirtualRings::RequestRefresh(
+        VirtualRings::RefreshOptions {
+            .soundTarget = a_target,
+            .sound = RingSounds::Event::kEquip,
+        }
+    );
+
+    result.selectionChanged = true;
+    return result;
+}
+
+void QueueVanillaRingSlotFormToVirtual(const RE::FormID a_sourceFormID, const RingTarget a_target) {
+    if (!CanUseVirtualTarget(a_target, "queueVanillaRingSlotFormToVirtual"sv)) {
         return;
     }
 
-    const auto normalSource = g_selections[ToIndex(DisplaySlot::kRegular)].sourceFormID;
-    if (BondOfMatrimony::IsBond(normalSource)) {
-        g_selections[ToIndex(DisplaySlot::kRegular)] = {};
-        ArmorClones::ClearRestore(DisplaySlot::kRegular);
-    }
-}
+    stl::add_task([a_sourceFormID, a_target] {
+        const auto result = MoveVanillaRingSlotFormToVirtual(a_sourceFormID, a_target);
+        auto* player = GetPlayer();
+        auto* ring = LookupSourceRing(a_sourceFormID);
+        if (!player || !ring) {
+            return;
+        }
 
-void RequestMove(const RE::FormID a_sourceFormID, const DisplaySlot a_channel, const bool a_playSounds) {
-    stl::add_task([a_sourceFormID, a_channel, a_playSounds] {
-        MoveRightToLeft(a_sourceFormID, a_channel, a_playSounds);
+        if (result.inventoryChanged) {
+            UI::RefreshItemRowsForRing(*player, ring);
+        } else if (result.selectionChanged) {
+            UI::RefreshRingRows();
+        }
     });
 }
 
-void RequestCustomMove(
+void QueueVanillaRingSlotCustomToVirtual(
     const RE::FormID a_sourceFormID,
     Inventory::CustomEnchantmentKey a_key,
     std::optional<Inventory::ExtraListIdentity> a_identity,
-    const DisplaySlot a_channel,
-    const bool a_playSounds
+    const RingTarget a_target
 ) {
-    stl::add_task([a_sourceFormID, key = std::move(a_key), identity = a_identity, a_channel, a_playSounds] {
-        MoveRightToLeftCustom(a_sourceFormID, key, identity, a_channel, a_playSounds);
+    if (!CanUseVirtualTarget(a_target, "queueVanillaRingSlotCustomToVirtual"sv)) {
+        return;
+    }
+
+    stl::add_task([a_sourceFormID, key = std::move(a_key), identity = a_identity, a_target] {
+        const auto result = MoveVanillaRingSlotCustomToVirtual(a_sourceFormID, key, identity, a_target);
+        auto* player = GetPlayer();
+        auto* ring = LookupSourceRing(a_sourceFormID);
+        if (!player || !ring) {
+            return;
+        }
+
+        if (result.inventoryChanged) {
+            UI::RefreshItemRowsForRing(*player, ring);
+        } else if (result.selectionChanged) {
+            UI::RefreshRingRows();
+        }
     });
 }
 
 bool InterceptRightEquip(RE::Actor& a_actor, const RE::TESObjectARMO& a_ring, const RE::ObjectEquipParams& a_params) {
-    const auto sourceFormID = a_ring.GetFormID();
-    const auto selectedChannel = FindSelectedChannelForSource(sourceFormID);
-    if (!selectedChannel) {
+    if (a_params.equipSlot && a_params.equipSlot->GetFormID() == Forms::kLeftHandEquipSlotFormID) {
         return false;
     }
 
-    const auto channel = selectedChannel->channel;
-    if (channel == DisplaySlot::kBond && !Settings::GetSingleton()->IsBondOfMatrimonyEnabled()) {
+    std::optional<Inventory::CustomEnchantmentKey> customKey;
+    std::optional<Inventory::ExtraListIdentity> customIdentity;
+    const auto
+        selectedTarget = FindVirtualTargetForVanillaRingSlotEquip(a_actor, a_ring, a_params, customKey, customIdentity);
+    if (!selectedTarget) {
         return false;
     }
 
-    const auto& selection = selectedChannel->selection;
-    if (selection.kind == Kind::kCustomEnchantment) {
-        return InterceptCustomRightEquip(a_actor, a_ring, selection, a_params, channel);
-    }
-
-    const auto sourceState = Inventory::GetSourceState(a_actor, a_ring);
-    if (sourceState.CanWearSameFormInBothHands()) {
-        return false;
-    }
-
-    QueueMoveLeftToRight(sourceFormID, std::nullopt, std::nullopt, a_params, channel);
+    QueueMoveVirtualToVanillaRingSlot(
+        a_ring.GetFormID(),
+        std::move(customKey),
+        customIdentity,
+        a_params,
+        *selectedTarget
+    );
     return true;
 }
 
 void QueueCheck() {
     stl::add_task([] {
-        for (const auto channel : kDisplaySlots) {
-            EnforceSameSourceInvariant(channel);
+        auto* player = GetPlayer();
+        if (!player) {
+            return;
         }
+
+        for (const auto target : kVirtualRingTargets) {
+            EnforceTargetInvariant(*player, target);
+        }
+
+        VirtualRings::RequestRefresh();
     });
 }
 
 void OnContainerChanged(const RE::TESContainerChangedEvent& a_event) {
     const auto snapshot = GetSnapshot();
-    if ((snapshot.regular.sourceFormID == 0 || a_event.baseObj != snapshot.regular.sourceFormID)
-        && (snapshot.bond.sourceFormID == 0 || a_event.baseObj != snapshot.bond.sourceFormID)) {
+    if (!SnapshotReferencesBaseObject(snapshot, a_event.baseObj)) {
         return;
     }
 

@@ -53,8 +53,6 @@ configure_file(
 )
 
 set(SOURCES
-        src/BondOfMatrimony.cpp
-        src/BondOfMatrimony.h
         src/EventBindings.cpp
         src/EventBindings.h
         src/EventListener.cpp
@@ -68,25 +66,29 @@ set(SOURCES
         src/Inventory.cpp
         src/Inventory.h
         src/main.cpp
-        src/MeshRetargeting.cpp
-        src/MeshRetargeting.h
+        src/RingEnchantments.cpp
+        src/RingEnchantments.h
+        src/RingFootprints.cpp
+        src/RingFootprints.h
+        src/RingSounds.cpp
+        src/RingSounds.h
+        src/RingVisuals.cpp
+        src/RingVisuals.h
         src/Papyrus.cpp
         src/Papyrus.h
         src/PCH.h
-        src/ArmorClones.cpp
-        src/ArmorClones.h
-        src/ClonedEquipment.cpp
-        src/ClonedEquipment.h
         src/Selection.cpp
         src/Selection.h
         src/Serialization.cpp
         src/Serialization.h
         src/Settings.cpp
         src/Settings.h
-        src/Slots.cpp
-        src/Slots.h
+        src/RingTargets.cpp
+        src/RingTargets.h
         src/UI.cpp
         src/UI.h
+        src/VirtualRings.cpp
+        src/VirtualRings.h
         "${CMAKE_CURRENT_BINARY_DIR}/version.rc"
 )
 

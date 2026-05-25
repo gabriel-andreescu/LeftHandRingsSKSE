@@ -50,6 +50,15 @@ struct CustomMatchState {
     [[nodiscard]] bool CanWearSameKeyInBothHands() const;
 };
 
+struct FormOnlyMatchState {
+    RE::ExtraDataList* rightWornExtraList {nullptr};
+    std::int32_t count {0};
+    bool rightWorn {false};
+
+    [[nodiscard]] bool HasMatch() const;
+    [[nodiscard]] bool CanWearSameFormInBothHands() const;
+};
+
 struct SourceRingState {
     RE::InventoryEntryData* entry {nullptr};
     RE::ExtraDataList* rightWornExtraList {nullptr};
@@ -57,7 +66,6 @@ struct SourceRingState {
     bool rightWorn {false};
     bool rightWornEnchanted {false};
 
-    [[nodiscard]] bool CanWearSameFormInBothHands() const;
     [[nodiscard]] bool HasRightWornEnchantment() const;
 };
 
@@ -96,7 +104,8 @@ struct SourceRingState {
     const CustomEnchantmentKey& a_key,
     const std::optional<ExtraListIdentity>& a_identity = std::nullopt
 );
-[[nodiscard]] EntryCustomSelection ResolveCustomSelection(RE::InventoryEntryData& a_entry);
+[[nodiscard]] FormOnlyMatchState FindFormOnlyMatches(RE::Actor& a_actor, const RE::TESObjectARMO& a_ring);
+[[nodiscard]] EntryCustomSelection ResolveEntryCustomSelection(RE::InventoryEntryData& a_entry);
 [[nodiscard]] RE::TESObjectARMO* AsRing(RE::TESBoundObject* a_object);
 [[nodiscard]] RE::TESObjectARMO* AsRing(RE::TESForm* a_form);
 [[nodiscard]] bool IsRing(const RE::TESObjectARMO* a_armor);

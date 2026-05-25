@@ -1,13 +1,12 @@
-#include "ArmorClones.h"
-#include "BondOfMatrimony.h"
-#include "ClonedEquipment.h"
 #include "EventBindings.h"
 #include "EventListener.h"
 #include "FirstPerson.h"
 #include "Hooks.h"
 #include "Papyrus.h"
+#include "RingVisuals.h"
 #include "Serialization.h"
 #include "Settings.h"
+#include "VirtualRings.h"
 
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/msvc_sink.h>
@@ -15,10 +14,10 @@
 namespace {
 constexpr auto kTrampolineSize = 1024;
 
-void RefreshEquipmentSoon() {
+void QueueDelayedVirtualRingRefresh() {
     stl::add_thread_task(
         [] {
-            ClonedEquipment::RequestRefresh();
+            VirtualRings::RequestRefresh();
         },
         250ms
     );
@@ -31,22 +30,21 @@ void MessageHandler(SKSE::MessagingInterface::Message* a_msg) {
 
     switch (a_msg->type) {
         case SKSE::MessagingInterface::kPreLoadGame:
-            ArmorClones::Revert();
             EventBindings::Revert();
-            ClonedEquipment::DiscardState();
+            VirtualRings::Revert();
+            RingVisuals::Revert();
             break;
         case SKSE::MessagingInterface::kDataLoaded:
             Settings::GetSingleton()->Load();
-            BondOfMatrimony::Load();
             FirstPerson::ApplyRaceFlags();
             Hooks::Install();
             EventListener::Register();
-            RefreshEquipmentSoon();
+            QueueDelayedVirtualRingRefresh();
             break;
         case SKSE::MessagingInterface::kNewGame:
         case SKSE::MessagingInterface::kPostLoadGame:
             FirstPerson::ApplyRaceFlags();
-            RefreshEquipmentSoon();
+            QueueDelayedVirtualRingRefresh();
             break;
         default: break;
     }

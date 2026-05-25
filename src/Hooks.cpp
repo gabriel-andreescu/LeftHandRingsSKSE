@@ -1,18 +1,14 @@
 #include "Hooks.h"
 
-#include "ClonedEquipment.h"
 #include "EventBindings.h"
 #include "Forms.h"
 #include "Inventory.h"
-#include "MeshRetargeting.h"
+#include "RingEnchantments.h"
+#include "RingVisuals.h"
 #include "Selection.h"
-#include "Settings.h"
-#include "Slots.h"
 #include "UI.h"
+#include "VirtualRings.h"
 
-#include <RE/S/SendUIMessage.h>
-
-#include <cstdint>
 #include <cstring>
 #include <optional>
 
@@ -47,7 +43,7 @@ namespace {
             }
 
             auto* sourceArmor = a_effect && a_effect->source ? a_effect->source->As<RE::TESObjectARMO>() : nullptr;
-            const auto scale = ClonedEquipment::GetEnchantmentScale(*actor, sourceArmor);
+            const auto scale = RingEnchantments::GetScale(*actor, sourceArmor);
             if (scale >= 1.0F) {
                 return;
             }
@@ -58,11 +54,11 @@ namespace {
         static inline REL::Relocation<decltype(thunk)> func;
     };
 
-    void InstallEnchantmentPowerHook() {
+    void InstallEnchantmentStrengthHook() {
         stl::write_thunk_call<ActiveEffectSetEffectivenessHook>(
             REL::Relocation {RELOCATION_ID(33763, 34547), REL::Relocate(0x4A3, 0x656, 0x427)}
         );
-        logger::info("Hooks: enchantment power hook installed");
+        logger::info("Hooks: enchantment strength hook installed");
     }
 
     struct GetEquippedConditionHook {
@@ -74,7 +70,7 @@ namespace {
 
             auto* actor = a_thisObj->As<RE::Actor>();
             auto* getEquippedArgument = static_cast<RE::TESForm*>(a_param1);
-            if (actor && ClonedEquipment::HasWornSourceMatching(*actor, *getEquippedArgument)) {
+            if (actor && VirtualRings::MatchesGetEquippedCondition(*actor, *getEquippedArgument)) {
                 a_result = 1.0;
             }
 
@@ -96,68 +92,6 @@ namespace {
         logger::info("Hooks: GetEquipped condition hook installed");
     }
 
-    struct SlotReplacement {
-        RE::TESObjectARMO* armor {nullptr};
-        DisplaySlot channel {DisplaySlot::kRegular};
-    };
-
-    [[nodiscard]] std::optional<SlotReplacement> AsLeftSlotArmor(RE::TESBoundObject* a_object) {
-        auto* armor = a_object ? a_object->As<RE::TESObjectARMO>() : nullptr;
-        if (!armor || ClonedEquipment::IsArmor(armor)) {
-            return std::nullopt;
-        }
-
-        if (armor->HasPartOf(Slots::GetArmorSlot(DisplaySlot::kRegular))) {
-            return SlotReplacement {
-                .armor = armor,
-                .channel = DisplaySlot::kRegular,
-            };
-        }
-
-        if (Settings::GetSingleton()->IsBondOfMatrimonyEnabled()
-            && armor->HasPartOf(Slots::GetArmorSlot(DisplaySlot::kBond))) {
-            return SlotReplacement {
-                .armor = armor,
-                .channel = DisplaySlot::kBond,
-            };
-        }
-
-        return std::nullopt;
-    }
-
-    void ClearVirtualLeftSlotForReplacement(
-        RE::Actor& a_actor,
-        const RE::TESObjectARMO& a_replacement,
-        const DisplaySlot a_channel
-    ) {
-        if (a_actor.GetWornArmor(Slots::GetArmorSlot(a_channel)) != std::addressof(a_replacement)) {
-            return;
-        }
-
-        Selection::Clear(a_channel);
-        ClonedEquipment::Clear(a_channel);
-        RE::SendUIMessage::SendInventoryUpdateMessage(std::addressof(a_actor), std::addressof(a_replacement));
-        UI::RefreshRows();
-    }
-
-    void SyncAfterEquip(RE::Actor& a_actor) {
-        auto refreshed = false;
-        for (const auto channel : kDisplaySlots) {
-            const auto sourceFormID = ClonedEquipment::SyncAfterEquip(a_actor, channel);
-            if (!sourceFormID) {
-                continue;
-            }
-
-            auto* sourceRing = RE::TESForm::LookupByID<RE::TESObjectARMO>(*sourceFormID);
-            RE::SendUIMessage::SendInventoryUpdateMessage(std::addressof(a_actor), sourceRing);
-            refreshed = true;
-        }
-
-        if (refreshed) {
-            UI::RefreshRows();
-        }
-    }
-
     struct EquipObjectHook {
         static void thunk(
             RE::ActorEquipManager* a_equipManager,
@@ -170,36 +104,16 @@ namespace {
                 return;
             }
 
-            auto leftSlotReplacement = AsLeftSlotArmor(a_object);
-            auto* armor = a_object ? a_object->As<RE::TESObjectARMO>() : nullptr;
-            const auto isClonedArmor = ClonedEquipment::IsArmor(armor);
             auto* ring = Inventory::AsRing(a_object);
-            if (!ring) {
-                func(a_equipManager, a_actor, a_object, a_params);
-                if (leftSlotReplacement) {
-                    ClearVirtualLeftSlotForReplacement(
-                        *a_actor,
-                        *leftSlotReplacement->armor,
-                        leftSlotReplacement->channel
-                    );
-                }
-                if (!isClonedArmor) {
-                    SyncAfterEquip(*a_actor);
-                }
-                return;
-            }
-
-            if (Selection::InterceptRightEquip(*a_actor, *ring, a_params)) {
+            if (ring && Selection::InterceptRightEquip(*a_actor, *ring, a_params)) {
                 return;
             }
 
             func(a_equipManager, a_actor, a_object, a_params);
-            if (leftSlotReplacement) {
-                ClearVirtualLeftSlotForReplacement(*a_actor, *leftSlotReplacement->armor, leftSlotReplacement->channel);
+            Selection::QueueCheck();
+            if (ring) {
+                UI::QueueRefreshAfterRingEquip(ring->GetFormID());
             }
-
-            SyncAfterEquip(*a_actor);
-            UI::RefreshEquipmentSoon(ring->GetFormID());
         }
 
         static inline REL::Relocation<decltype(thunk)> func;
@@ -209,76 +123,7 @@ namespace {
         stl::write_thunk_call<EquipObjectHook>(
             REL::Relocation {RELOCATION_ID(37938, 38894), REL::Relocate(0xE5, 0x170)}
         );
-        logger::info("ClonedEquipment: equip observer installed");
-    }
-
-    template <class T>
-    void HandleAddAddonNodes(
-        RE::NiAVObject* a_clonedNode,
-        RE::NiAVObject* a_node,
-        std::int32_t a_slot,
-        RE::TESObjectREFR* a_actor,
-        RE::BSTSmartPointer<RE::BipedAnim>& a_biped
-    ) {
-        auto context = MeshRetargeting::CaptureAttachContext(a_slot, a_actor, a_biped);
-        T::func(a_clonedNode, a_node, a_slot, a_actor, a_biped);
-        if (context) {
-            MeshRetargeting::QueueReplacement(std::move(*context));
-        }
-    }
-
-    struct AddAddonNodesCall1 {
-        static void thunk(
-            RE::NiAVObject* a_clonedNode,
-            RE::NiAVObject* a_node,
-            std::int32_t a_slot,
-            RE::TESObjectREFR* a_actor,
-            RE::BSTSmartPointer<RE::BipedAnim>& a_biped
-        ) {
-            HandleAddAddonNodes<AddAddonNodesCall1>(a_clonedNode, a_node, a_slot, a_actor, a_biped);
-        }
-
-        static inline REL::Relocation<decltype(thunk)> func;
-    };
-
-    struct AddAddonNodesCall2 {
-        static void thunk(
-            RE::NiAVObject* a_clonedNode,
-            RE::NiAVObject* a_node,
-            std::int32_t a_slot,
-            RE::TESObjectREFR* a_actor,
-            RE::BSTSmartPointer<RE::BipedAnim>& a_biped
-        ) {
-            HandleAddAddonNodes<AddAddonNodesCall2>(a_clonedNode, a_node, a_slot, a_actor, a_biped);
-        }
-
-        static inline REL::Relocation<decltype(thunk)> func;
-    };
-
-    struct AddAddonNodesCall3 {
-        static void thunk(
-            RE::NiAVObject* a_clonedNode,
-            RE::NiAVObject* a_node,
-            std::int32_t a_slot,
-            RE::TESObjectREFR* a_actor,
-            RE::BSTSmartPointer<RE::BipedAnim>& a_biped
-        ) {
-            HandleAddAddonNodes<AddAddonNodesCall3>(a_clonedNode, a_node, a_slot, a_actor, a_biped);
-        }
-
-        static inline REL::Relocation<decltype(thunk)> func;
-    };
-
-    void InstallMeshRetargetingHooks() {
-        constexpr REL::RelocationID attachUpdate {15501, 15678};
-        stl::write_thunk_call<AddAddonNodesCall1>(REL::Relocation {attachUpdate, REL::Relocate(0xCBF, 0xE11, 0xDF0)});
-        stl::write_thunk_call<AddAddonNodesCall2>(
-            REL::Relocation {attachUpdate, REL::Relocate(0x3023, 0x32D3, 0x32D3)}
-        );
-        stl::write_thunk_call<AddAddonNodesCall3>(
-            REL::Relocation {attachUpdate, REL::Relocate(0x36B7, 0x3967, 0x3967)}
-        );
-        logger::info("MeshRetargeting: AddAddonNodes hooks installed");
+        logger::info("VirtualRings: equip observer installed");
     }
 
     [[nodiscard]] bool IsMirroredEventName(const RE::BSFixedString& a_eventName) {
@@ -361,9 +206,10 @@ namespace {
 
     struct InventoryItemSelectHook {
         static void thunk(void* a_menuContext, RE::BGSEquipSlot* a_slot) {
-            if (GetHandEquipSlot(a_slot) == HandEquipSlot::kLeft) {
+            const auto handSlot = GetHandEquipSlot(a_slot);
+            if (handSlot == HandEquipSlot::kLeft) {
                 auto* entry = GetSelectedEntryFromItemSelectContext(a_menuContext);
-                if (UI::SelectEntryForLeftHand(entry)) {
+                if (UI::SelectEntryForLeftHand(entry, UI::SelectionOrigin::kInventoryMenu)) {
                     return;
                 }
             }
@@ -375,7 +221,6 @@ namespace {
     };
 
     void InstallInventoryItemSelectHook() {
-        // SE/AE/VR: InventoryMenu::ItemSelect + 0x47, +0x66, +0x75
         stl::write_thunk_branch<InventoryItemSelectHook>(
             REL::Relocation {REL::VariantID(50977, 51856, 0x8BB9C0), 0x47}
         );
@@ -396,11 +241,12 @@ namespace {
             RE::BGSEquipSlot* a_slot,
             bool a_queueEquip
         ) {
+            const auto handSlot = GetHandEquipSlot(a_slot);
             if (a_actor
                 && a_actor->IsPlayerRef()
-                && GetHandEquipSlot(a_slot)
+                && handSlot
                 == HandEquipSlot::kLeft
-                && UI::SelectEntryForLeftHand(a_entry)) {
+                && UI::SelectEntryForLeftHand(a_entry, UI::SelectionOrigin::kFavoritesMenu)) {
                 return;
             }
 
@@ -415,12 +261,30 @@ namespace {
         InstallInventoryItemSelectHook();
         UI::RegisterInventoryData();
 
-        // SE/VR: FavoritesMenu::UseQuickslotItem + 0xC4
-        // AE:    FavoritesMenu::UseQuickslotItem + 0xC2
         stl::write_thunk_call<FavoritesUseQuickslotItemHook>(
             REL::Relocation {REL::VariantID(50654, 51548, 0x8A5110), REL::Relocate(0xC4, 0xC2)}
         );
         logger::info("UI: FavoritesMenu quickslot hook installed");
+    }
+
+    struct CharacterLoad3DHook {
+        static RE::NiAVObject* thunk(RE::Character* a_actor, bool a_backgroundLoading) {
+            auto* result = func(a_actor, a_backgroundLoading);
+            if (result && a_actor && a_actor->IsPlayerRef()) {
+                RingVisuals::RequestRefresh();
+            }
+            return result;
+        }
+
+        static inline REL::Relocation<decltype(thunk)> func;
+    };
+
+    void InstallLoad3DHook() {
+#ifndef __clang_analyzer__
+        REL::Relocation<std::uintptr_t> vTable {RE::Character::VTABLE[0]};
+        CharacterLoad3DHook::func = vTable.write_vfunc(0x6A, CharacterLoad3DHook::thunk);
+#endif
+        logger::info("RingVisuals: Character Load3D hook installed");
     }
 }
 
@@ -428,8 +292,8 @@ void Install() {
     InstallUI();
     InstallEquipObserverHook();
     InstallGetEquippedConditionHook();
-    InstallEnchantmentPowerHook();
+    InstallEnchantmentStrengthHook();
     InstallPapyrusEventMirrorHook();
-    InstallMeshRetargetingHooks();
+    InstallLoad3DHook();
 }
 }

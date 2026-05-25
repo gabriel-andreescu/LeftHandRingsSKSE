@@ -1,9 +1,8 @@
 #include "Serialization.h"
 
-#include "ArmorClones.h"
-#include "ClonedEquipment.h"
 #include "EventBindings.h"
 #include "Selection.h"
+#include "VirtualRings.h"
 
 #include <array>
 #include <utility>
@@ -12,16 +11,7 @@ namespace Serialization {
 namespace {
     constexpr auto kSerializationID = MakeRecordType('L', 'H', 'R', 'S');
     constexpr auto kRecordState = MakeRecordType('S', 'T', 'A', 'T');
-    constexpr std::uint32_t kRecordVersion = 2;
-    constexpr std::uint32_t kRecordVersion1 = 1;
-
-    struct SerializedCustomKeyHeaderV1 {
-        RE::FormID enchantmentFormID {0};
-        std::uint16_t charge {0};
-        std::uint8_t removeOnUnequip {0};
-        std::uint8_t pad {0};
-        std::uint32_t displayNameLength {0};
-    };
+    constexpr std::uint32_t kRecordVersion = 4;
 
     struct SerializedCustomKeyHeader {
         RE::FormID enchantmentFormID {0};
@@ -39,9 +29,17 @@ namespace {
         return a_intfc.WriteRecordData(a_value);
     }
 
-    [[nodiscard]] bool WriteState(SKSE::SerializationInterface& a_intfc, const Selection::State& a_state) {
+    [[nodiscard]] bool WriteState(
+        SKSE::SerializationInterface& a_intfc,
+        const RingTarget a_target,
+        const Selection::State& a_state
+    ) {
+        const auto targetIndex = ToIndex(a_target);
         const auto kind = std::to_underlying(a_state.kind);
-        if (!WriteField(a_intfc, kind) || !WriteField(a_intfc, a_state.sourceFormID)) {
+        if (!WriteField(a_intfc, targetIndex)
+            || !WriteField(a_intfc, kind)
+            || !WriteField(a_intfc, a_state.sourceFormID)
+            || !WriteField(a_intfc, a_state.restoredEffectSourceFormID)) {
             return false;
         }
 
@@ -71,7 +69,18 @@ namespace {
     }
 
     [[nodiscard]] bool WriteSnapshot(SKSE::SerializationInterface& a_intfc, const Selection::Snapshot& a_state) {
-        return WriteState(a_intfc, a_state.regular) && WriteState(a_intfc, a_state.bond);
+        const auto targetCount = static_cast<std::uint32_t>(kVirtualRingTargets.size());
+        if (!WriteField(a_intfc, targetCount)) {
+            return false;
+        }
+
+        for (const auto target : kVirtualRingTargets) {
+            if (!WriteState(a_intfc, target, a_state.targets[ToIndex(target)])) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     template <class T>
@@ -103,70 +112,59 @@ namespace {
 
     [[nodiscard]] std::optional<Selection::State> ReadState(
         SKSE::SerializationInterface& a_intfc,
-        std::uint32_t& a_remaining,
-        const std::uint32_t a_version
+        std::uint32_t& a_remaining
     ) {
         std::uint32_t kind = 0;
         RE::FormID sourceFormID = 0;
-        if (!ReadField(a_intfc, a_remaining, kind) || !ReadField(a_intfc, a_remaining, sourceFormID)) {
+        RE::FormID effectSourceFormID = 0;
+        if (!ReadField(a_intfc, a_remaining, kind)
+            || !ReadField(a_intfc, a_remaining, sourceFormID)
+            || !ReadField(a_intfc, a_remaining, effectSourceFormID)) {
             return std::nullopt;
         }
 
         auto state = Selection::State {
             .kind = static_cast<Selection::Kind>(kind),
             .sourceFormID = sourceFormID,
+            .restoredEffectSourceFormID = effectSourceFormID,
         };
 
-        if (state.kind == Selection::Kind::kCustomEnchantment) {
-            SerializedCustomKeyHeader header;
-            if (a_version == kRecordVersion1) {
-                SerializedCustomKeyHeaderV1 headerV1;
-                if (!ReadField(a_intfc, a_remaining, headerV1)) {
-                    DrainRecordData(a_intfc, a_remaining);
-                    return std::nullopt;
-                }
+        if (state.kind != Selection::Kind::kCustomEnchantment) {
+            return state;
+        }
 
-                header = SerializedCustomKeyHeader {
-                    .enchantmentFormID = headerV1.enchantmentFormID,
-                    .charge = headerV1.charge,
-                    .removeOnUnequip = headerV1.removeOnUnequip,
-                    .displayNameLength = headerV1.displayNameLength,
-                };
-            } else if (!ReadField(a_intfc, a_remaining, header)) {
-                DrainRecordData(a_intfc, a_remaining);
-                return std::nullopt;
-            }
+        SerializedCustomKeyHeader header;
+        if (!ReadField(a_intfc, a_remaining, header)) {
+            return std::nullopt;
+        }
 
-            if (header.displayNameLength > a_remaining) {
-                DrainRecordData(a_intfc, a_remaining);
-                return std::nullopt;
-            }
+        if (header.displayNameLength > a_remaining) {
+            return std::nullopt;
+        }
 
-            state.customKey = Inventory::CustomEnchantmentKey {
-                .enchantmentFormID = header.enchantmentFormID,
-                .charge = header.charge,
-                .removeOnUnequip = header.removeOnUnequip != 0,
+        state.customKey = Inventory::CustomEnchantmentKey {
+            .enchantmentFormID = header.enchantmentFormID,
+            .charge = header.charge,
+            .removeOnUnequip = header.removeOnUnequip != 0,
+        };
+
+        if (header.hasIdentity != 0) {
+            state.customIdentity = Inventory::ExtraListIdentity {
+                .baseID = header.uniqueBaseID,
+                .uniqueID = header.uniqueID,
             };
+        }
 
-            if (header.hasIdentity != 0) {
-                state.customIdentity = Inventory::ExtraListIdentity {
-                    .baseID = header.uniqueBaseID,
-                    .uniqueID = header.uniqueID,
-                };
+        if (header.displayNameLength > 0) {
+            state.customKey.playerDisplayName.resize(header.displayNameLength);
+            const auto read = a_intfc.ReadRecordData(
+                state.customKey.playerDisplayName.data(),
+                header.displayNameLength
+            );
+            if (read != header.displayNameLength) {
+                return std::nullopt;
             }
-
-            if (header.displayNameLength > 0) {
-                state.customKey.playerDisplayName.resize(header.displayNameLength);
-                const auto read = a_intfc.ReadRecordData(
-                    state.customKey.playerDisplayName.data(),
-                    header.displayNameLength
-                );
-                if (read != header.displayNameLength) {
-                    DrainRecordData(a_intfc, a_remaining > read ? a_remaining - read : 0);
-                    return std::nullopt;
-                }
-                a_remaining -= read;
-            }
+            a_remaining -= read;
         }
 
         return state;
@@ -174,15 +172,31 @@ namespace {
 
     [[nodiscard]] std::optional<Selection::Snapshot> ReadSnapshot(
         SKSE::SerializationInterface& a_intfc,
-        const std::uint32_t a_length,
-        const std::uint32_t a_version
+        const std::uint32_t a_length
     ) {
         auto remaining = a_length;
-        auto normal = ReadState(a_intfc, remaining, a_version);
-        auto bond = normal ? ReadState(a_intfc, remaining, a_version) : std::nullopt;
-        if (!normal || !bond) {
+        std::uint32_t targetCount = 0;
+        if (!ReadField(a_intfc, remaining, targetCount) || targetCount != kVirtualRingTargets.size()) {
             DrainRecordData(a_intfc, remaining);
             return std::nullopt;
+        }
+
+        Selection::Snapshot snapshot;
+        for (std::uint32_t index = 0; index < targetCount; ++index) {
+            std::uint32_t storedTargetIndex = 0;
+            if (!ReadField(a_intfc, remaining, storedTargetIndex)) {
+                DrainRecordData(a_intfc, remaining);
+                return std::nullopt;
+            }
+
+            const auto target = FromIndex(storedTargetIndex);
+            auto state = ReadState(a_intfc, remaining);
+            if (!target || !IsVirtualRingTarget(*target) || !state) {
+                DrainRecordData(a_intfc, remaining);
+                return std::nullopt;
+            }
+
+            snapshot.targets[ToIndex(*target)] = std::move(*state);
         }
 
         if (remaining != 0) {
@@ -190,10 +204,7 @@ namespace {
             return std::nullopt;
         }
 
-        return Selection::Snapshot {
-            .regular = *normal,
-            .bond = *bond,
-        };
+        return snapshot;
     }
 
     void SaveCallback(SKSE::SerializationInterface* a_intfc) {
@@ -211,9 +222,7 @@ namespace {
             logger::error("Serialization: save failed | record=state | reason=writeRecord");
         }
 
-        const auto cloneKeys = Selection::GetCloneKeys();
-        ArmorClones::Save(*a_intfc, cloneKeys);
-        EventBindings::Save(*a_intfc, cloneKeys);
+        EventBindings::Save(*a_intfc, VirtualRings::GetEventBindingSources());
     }
 
     void LoadCallback(SKSE::SerializationInterface* a_intfc) {
@@ -232,29 +241,31 @@ namespace {
                 .length = length,
             };
 
-            if (ArmorClones::LoadRecord(recordInfo, *a_intfc)) {
-                continue;
-            }
-
             if (EventBindings::LoadRecord(recordInfo, *a_intfc)) {
                 continue;
             }
 
             if (type != kRecordState) {
-                logger::warn("Serialization: record skipped | type={:08X} | reason=unknownType", type);
+                logger::warn(
+                    "Serialization: record skipped | type={:08X} | length={} | reason=unknownType",
+                    type,
+                    length
+                );
+                DrainRecordData(*a_intfc, length);
                 continue;
             }
 
-            if (version != kRecordVersion1 && version != kRecordVersion) {
+            if (version != kRecordVersion) {
                 logger::warn(
                     "Serialization: record skipped | version={} | length={} | reason=unsupportedStateVersion",
                     version,
                     length
                 );
+                DrainRecordData(*a_intfc, length);
                 continue;
             }
 
-            auto state = ReadSnapshot(*a_intfc, length, version);
+            auto state = ReadSnapshot(*a_intfc, length);
             if (!state) {
                 logger::error("Serialization: load failed | record=state | reason=readRecord");
                 continue;
@@ -264,17 +275,16 @@ namespace {
         }
 
         stl::add_task([] {
-            ClonedEquipment::RequestRefresh();
+            VirtualRings::RequestRefresh();
         });
     }
 
     void RevertCallback([[maybe_unused]] SKSE::SerializationInterface* a_intfc) {
         Selection::Revert();
-        ArmorClones::Revert();
         EventBindings::Revert();
-        ClonedEquipment::DiscardState();
+        VirtualRings::Revert();
         stl::add_task([] {
-            ClonedEquipment::RequestRefresh();
+            VirtualRings::RequestRefresh();
         });
     }
 }

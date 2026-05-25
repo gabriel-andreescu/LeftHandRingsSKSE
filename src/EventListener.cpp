@@ -41,13 +41,11 @@ EventListener::Control EventListener::ProcessEvent(
         return Control::kContinue;
     }
 
-    auto* ring = Inventory::AsRing(RE::TESForm::LookupByID(a_event->baseObject));
-    if (!ring) {
+    if (!Inventory::AsRing(RE::TESForm::LookupByID(a_event->baseObject))) {
         return Control::kContinue;
     }
 
-    if (!a_event->equipped) {
-        UI::RefreshEquipmentSoon(ring->GetFormID());
-    }
+    Selection::QueueCheck();
+    UI::QueueRefreshAfterRingEquip();
     return Control::kContinue;
 }

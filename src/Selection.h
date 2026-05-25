@@ -1,11 +1,10 @@
 #pragma once
 
-#include "ArmorClones.h"
 #include "Inventory.h"
-#include "Slots.h"
+#include "RingTargets.h"
 
 #include <array>
-#include <vector>
+#include <optional>
 
 namespace Selection {
 enum class Kind : std::uint32_t {
@@ -17,6 +16,7 @@ enum class Kind : std::uint32_t {
 struct State {
     Kind kind {Kind::kNone};
     RE::FormID sourceFormID {0};
+    RE::FormID restoredEffectSourceFormID {0};
     Inventory::CustomEnchantmentKey customKey;
     std::optional<Inventory::ExtraListIdentity> customIdentity;
 
@@ -52,36 +52,58 @@ struct State {
 };
 
 struct Snapshot {
-    State regular;
-    State bond;
+    std::array<State, kRingTargets.size()> targets;
 };
 
-void Set(RE::TESObjectARMO* a_ring, DisplaySlot a_channel = DisplaySlot::kRegular);
-void SetCustom(
+struct VanillaRingSlotMoveResult {
+    bool selectionChanged {false};
+    bool inventoryChanged {false};
+
+    [[nodiscard]] bool ChangedState() const {
+        return selectionChanged || inventoryChanged;
+    }
+};
+
+[[nodiscard]] bool Set(RE::TESObjectARMO* a_ring, RingTarget a_target);
+[[nodiscard]] bool SetCustom(
     RE::TESObjectARMO& a_ring,
     Inventory::CustomEnchantmentKey a_key,
-    std::optional<Inventory::ExtraListIdentity> a_identity = std::nullopt,
-    DisplaySlot a_channel = DisplaySlot::kRegular
+    std::optional<Inventory::ExtraListIdentity> a_identity,
+    RingTarget a_target
 );
-void Clear(DisplaySlot a_channel = DisplaySlot::kRegular);
+void Clear(RingTarget a_target);
+void SetRestoredEffectSourceFormID(RingTarget a_target, RE::FormID a_effectSourceFormID);
 
-[[nodiscard]] RE::TESObjectARMO* GetSource(DisplaySlot a_channel = DisplaySlot::kRegular);
-[[nodiscard]] RE::FormID GetFormID(DisplaySlot a_channel = DisplaySlot::kRegular);
-[[nodiscard]] State Get(DisplaySlot a_channel = DisplaySlot::kRegular);
+[[nodiscard]] RE::TESObjectARMO* GetSource(RingTarget a_target);
+[[nodiscard]] RE::FormID GetFormID(RingTarget a_target);
+[[nodiscard]] State Get(RingTarget a_target);
+[[nodiscard]] bool IsSelected(
+    RingTarget a_target,
+    RE::FormID a_sourceFormID,
+    const std::optional<Inventory::CustomEnchantmentKey>& a_customKey = std::nullopt,
+    const std::optional<Inventory::ExtraListIdentity>& a_identity = std::nullopt
+);
 
 void Load(const Snapshot& a_state, SKSE::SerializationInterface& a_intfc);
 [[nodiscard]] Snapshot GetSnapshot();
-[[nodiscard]] std::vector<ArmorClones::CloneKey> GetCloneKeys();
 void Revert();
-void NormalizeAfterSettingsReload();
 
-void RequestMove(RE::FormID a_sourceFormID, DisplaySlot a_channel = DisplaySlot::kRegular, bool a_playSounds = false);
-void RequestCustomMove(
+[[nodiscard]] VanillaRingSlotMoveResult MoveVanillaRingSlotFormToVirtual(
+    RE::FormID a_sourceFormID,
+    RingTarget a_target
+);
+[[nodiscard]] VanillaRingSlotMoveResult MoveVanillaRingSlotCustomToVirtual(
+    RE::FormID a_sourceFormID,
+    const Inventory::CustomEnchantmentKey& a_customKey,
+    std::optional<Inventory::ExtraListIdentity> a_customIdentity,
+    RingTarget a_target
+);
+void QueueVanillaRingSlotFormToVirtual(RE::FormID a_sourceFormID, RingTarget a_target);
+void QueueVanillaRingSlotCustomToVirtual(
     RE::FormID a_sourceFormID,
     Inventory::CustomEnchantmentKey a_key,
-    std::optional<Inventory::ExtraListIdentity> a_identity = std::nullopt,
-    DisplaySlot a_channel = DisplaySlot::kRegular,
-    bool a_playSounds = false
+    std::optional<Inventory::ExtraListIdentity> a_identity,
+    RingTarget a_target
 );
 [[nodiscard]] bool InterceptRightEquip(
     RE::Actor& a_actor,

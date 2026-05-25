@@ -1,8 +1,11 @@
 # Changelog
 
-## 0.2.1 - Unreleased
+## 0.3.0 - Unreleased
 
-- fix: use unique inventory identity for player-enchanted left-hand rings
+- feat: add ring enchantment strength modes
+- feat: replace left-hand ring clones with slotless virtual rings
+- fix: prevent a crash when left-equipping rings from the inventory menu
+- fix: use unique inventory identity for player-enchanted virtual rings
 
 ## 0.2.0 - 2026-05-22
 

@@ -1,13 +1,13 @@
 #include "UI.h"
 
-#include "BondOfMatrimony.h"
-#include "ClonedEquipment.h"
 #include "Inventory.h"
+#include "RingSounds.h"
 #include "Selection.h"
-#include "Settings.h"
+#include "VirtualRings.h"
 
 #include <RE/S/SendUIMessage.h>
 
+#include <algorithm>
 #include <utility>
 
 namespace UI {
@@ -25,8 +25,7 @@ namespace {
     constexpr auto kScaleformCustomUniqueBaseID = "lhrsCustomUniqueBaseID";
     constexpr auto kScaleformCustomUniqueID = "lhrsCustomUniqueID";
     constexpr auto kScaleformCustomBlockReason = "lhrsCustomBlockReason";
-    constexpr auto kScaleformRightEquipped = "lhrsRightEquipped";
-    constexpr auto kInventoryEntryListPath = "_root.Menu_mc.inventoryLists.itemList.entryList";
+    constexpr auto kScaleformVanillaRingSlotEquipped = "lhrsVanillaRingSlotEquipped";
     constexpr auto kInventoryInvalidateListDataPath = "_root.Menu_mc.inventoryLists.InvalidateListData";
 
     struct RowSelection {
@@ -74,16 +73,8 @@ namespace {
                && (a_itemList.IsObject() || a_itemList.IsDisplayObject());
     }
 
-    [[nodiscard]] DisplaySlot GetSelectionChannelForRing(const RE::TESObjectARMO& a_ring) {
-        if (Settings::GetSingleton()->IsBondOfMatrimonyEnabled() && BondOfMatrimony::IsBond(std::addressof(a_ring))) {
-            return DisplaySlot::kBond;
-        }
-
-        return DisplaySlot::kRegular;
-    }
-
     [[nodiscard]] bool IsLeftEquipped(const RE::TESObjectARMO& a_ring, const RowSelection& a_rowSelection) {
-        const auto selection = Selection::Get(GetSelectionChannelForRing(a_ring));
+        const auto selection = Selection::Get(kDefaultLeftEquipTarget);
         const auto formID = a_ring.GetFormID();
         if (selection.sourceFormID == 0 || selection.sourceFormID != formID) {
             return false;
@@ -102,11 +93,11 @@ namespace {
     [[nodiscard]] int GetRingEquipState(
         const RE::TESObjectARMO& a_ring,
         const RowSelection& a_rowSelection,
-        const bool a_rightEquipped
+        const bool a_vanillaRingSlotEquipped
     ) {
         const auto leftEquipped = IsLeftEquipped(a_ring, a_rowSelection);
 
-        if (leftEquipped && a_rightEquipped) {
+        if (leftEquipped && a_vanillaRingSlotEquipped) {
             return kSkyUIEquipStateBoth;
         }
 
@@ -114,14 +105,24 @@ namespace {
             return kSkyUIEquipStateLeft;
         }
 
-        if (a_rightEquipped) {
+        if (a_vanillaRingSlotEquipped) {
             return kSkyUIEquipStateRight;
         }
 
         return kSkyUIEquipStateNone;
     }
 
-    [[nodiscard]] std::optional<bool> GetLiveRightEquipped(
+    [[nodiscard]] bool IsFormRowInVanillaRingSlot(RE::InventoryEntryData& a_entry) {
+        if (!a_entry.extraLists) {
+            return a_entry.IsWorn(false);
+        }
+
+        return std::ranges::any_of(*a_entry.extraLists, [](const auto* extraList) {
+            return Inventory::IsRightWorn(extraList) && !Inventory::HasCustomEnchantment(extraList);
+        });
+    }
+
+    [[nodiscard]] std::optional<bool> GetLiveVanillaRingSlotState(
         RE::TESObjectARMO& a_ring,
         const RowSelection& a_rowSelection
     ) {
@@ -131,35 +132,21 @@ namespace {
         }
 
         if (a_rowSelection.kind == Selection::Kind::kCustomEnchantment && a_rowSelection.customKey) {
-            const auto matches = Inventory::FindSourceMatches(
-                *player,
-                a_ring,
-                *a_rowSelection.customKey,
-                a_rowSelection.customIdentity
-            );
-            return matches.rightWornExtraList != nullptr;
+            return Inventory::FindSourceMatches(
+                       *player,
+                       a_ring,
+                       *a_rowSelection.customKey,
+                       a_rowSelection.customIdentity
+                   )
+                       .rightWornExtraList
+                   != nullptr;
         }
 
         if (a_rowSelection.kind != Selection::Kind::kFormOnly) {
             return std::nullopt;
         }
 
-        auto* entry = Inventory::FindEntry(*player, a_ring);
-        if (!entry) {
-            return std::nullopt;
-        }
-
-        if (!entry->extraLists) {
-            return entry->IsWorn(false);
-        }
-
-        for (auto* extraList : *entry->extraLists) {
-            if (Inventory::IsRightWorn(extraList) && !Inventory::HasCustomEnchantment(extraList)) {
-                return true;
-            }
-        }
-
-        return false;
+        return Inventory::FindFormOnlyMatches(*player, a_ring).rightWorn;
     }
 
     [[nodiscard]] std::optional<RE::FormID> GetScaleformFormID(const RE::GFxValue& a_object) {
@@ -348,45 +335,22 @@ namespace {
         return a_customSelection.identity;
     }
 
-    [[nodiscard]] std::optional<bool> RestampRingObjectFromStoredSelection(RE::GFxValue& a_object) {
-        const auto formID = GetScaleformFormID(a_object);
-        if (!formID) {
-            return std::nullopt;
-        }
-
-        auto* ring = Inventory::AsRing(RE::TESForm::LookupByID<RE::TESObjectARMO>(*formID));
-        if (!ring) {
-            return std::nullopt;
-        }
-
-        const auto previousEquipState = GetScaleformEquipState(a_object);
-        const auto rowSelection = GetScaleformRowSelection(a_object);
-        const auto previousRightEquipped = previousEquipState
-                                           == kSkyUIEquipStateRight
-                                           || previousEquipState
-                                           == kSkyUIEquipStateBoth;
-        const auto storedRightEquipped = GetScaleformBoolMember(a_object, kScaleformRightEquipped);
-        const auto liveRightEquipped = GetLiveRightEquipped(*ring, rowSelection);
-        const auto rowRightEquipped = liveRightEquipped.value_or(storedRightEquipped.value_or(previousRightEquipped));
-        const auto equipState = GetRingEquipState(*ring, rowSelection, rowRightEquipped);
-        a_object.SetMember(kScaleformRightEquipped, rowRightEquipped);
-        a_object.SetMember("equipState", equipState);
-        a_object.SetMember("isEquipped", equipState > kSkyUIEquipStateNone);
-
-        return previousEquipState != equipState;
-    }
-
     [[nodiscard]] std::optional<bool> StampEntryRingObject(RE::GFxValue& a_object, RE::InventoryEntryData& a_entry) {
         auto* ring = Inventory::AsRing(a_entry.GetObject());
         if (!ring) {
             return std::nullopt;
         }
 
-        auto customSelection = Inventory::ResolveCustomSelection(a_entry);
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player || Inventory::GetCount(*player, *ring) <= 0) {
+            return std::nullopt;
+        }
+
+        auto customSelection = Inventory::ResolveEntryCustomSelection(a_entry);
         auto selectionKind = Selection::Kind::kFormOnly;
         std::optional<Inventory::CustomEnchantmentKey> customKey;
         std::optional<Inventory::ExtraListIdentity> customIdentity;
-        auto rightEquipped = a_entry.IsWorn(false);
+        auto vanillaRingSlotEquipped = IsFormRowInVanillaRingSlot(a_entry);
 
         if (customSelection.failure != Inventory::EntryCustomFailure::kNone) {
             selectionKind = Selection::Kind::kNone;
@@ -395,7 +359,7 @@ namespace {
             if (customIdentity) {
                 selectionKind = Selection::Kind::kCustomEnchantment;
                 customKey = customSelection.key;
-                rightEquipped = Inventory::IsRightWorn(customSelection.extraList);
+                vanillaRingSlotEquipped = Inventory::IsRightWorn(customSelection.extraList);
             } else {
                 selectionKind = Selection::Kind::kNone;
             }
@@ -410,10 +374,10 @@ namespace {
                 .customKey = customKey,
                 .customIdentity = customIdentity,
             },
-            rightEquipped
+            vanillaRingSlotEquipped
         );
         const auto previousEquipState = GetScaleformEquipState(a_object);
-        a_object.SetMember(kScaleformRightEquipped, rightEquipped);
+        a_object.SetMember(kScaleformVanillaRingSlotEquipped, vanillaRingSlotEquipped);
         a_object.SetMember("equipState", equipState);
         a_object.SetMember("isEquipped", equipState > kSkyUIEquipStateNone);
 
@@ -471,6 +435,40 @@ namespace {
         static_cast<void>(StampEntryRingObject(*a_object, *a_item));
     }
 
+    [[nodiscard]] std::optional<bool> RestampInventoryRowFromStoredSelection(RE::GFxValue& a_entryObject) {
+        const auto formID = GetScaleformFormID(a_entryObject);
+        if (!formID) {
+            return std::nullopt;
+        }
+
+        auto* ring = Inventory::AsRing(RE::TESForm::LookupByID<RE::TESObjectARMO>(*formID));
+        if (!ring) {
+            return std::nullopt;
+        }
+
+        const auto previousEquipState = GetScaleformEquipState(a_entryObject);
+        const auto previousVanillaRingSlotState = previousEquipState
+                                                  == kSkyUIEquipStateRight
+                                                  || previousEquipState
+                                                  == kSkyUIEquipStateBoth;
+        const auto storedVanillaRingSlotState = GetScaleformBoolMember(
+            a_entryObject,
+            kScaleformVanillaRingSlotEquipped
+        );
+        const auto rowSelection = GetScaleformRowSelection(a_entryObject);
+        const auto liveVanillaRingSlotState = GetLiveVanillaRingSlotState(*ring, rowSelection);
+        const auto vanillaRingSlotEquipped = liveVanillaRingSlotState.value_or(
+            storedVanillaRingSlotState.value_or(previousVanillaRingSlotState)
+        );
+        const auto equipState = GetRingEquipState(*ring, rowSelection, vanillaRingSlotEquipped);
+
+        a_entryObject.SetMember(kScaleformVanillaRingSlotEquipped, vanillaRingSlotEquipped);
+        a_entryObject.SetMember("equipState", equipState);
+        a_entryObject.SetMember("isEquipped", equipState > kSkyUIEquipStateNone);
+
+        return previousEquipState != equipState;
+    }
+
     [[nodiscard]] bool InvalidateInventoryListData(RE::InventoryMenu& a_menu) {
         auto* movie = a_menu.uiMovie.get();
         if (!movie) {
@@ -490,31 +488,20 @@ namespace {
             return false;
         }
 
-        auto* movie = inventoryMenu->uiMovie.get();
-        if (!movie) {
+        auto* itemList = inventoryMenu->GetRuntimeData().itemList;
+        if (!itemList || !itemList->entryList.IsArray()) {
             return false;
         }
 
-        RE::GFxValue entryList;
-        if (!movie->GetVariable(std::addressof(entryList), kInventoryEntryListPath)) {
-            return false;
-        }
-
-        if (!entryList.IsArray()) {
-            return false;
-        }
-
-        const auto entryCount = entryList.GetArraySize();
         std::uint32_t changedEntryRows = 0;
-
-        for (std::uint32_t index = 0; index < entryCount; ++index) {
+        for (std::uint32_t index = 0; index < itemList->entryList.GetArraySize(); ++index) {
             RE::GFxValue entryObject;
-            if (!entryList.GetElement(index, std::addressof(entryObject))
+            if (!itemList->entryList.GetElement(index, std::addressof(entryObject))
                 || (!entryObject.IsObject() && !entryObject.IsDisplayObject())) {
                 continue;
             }
 
-            const auto changed = RestampRingObjectFromStoredSelection(entryObject);
+            const auto changed = RestampInventoryRowFromStoredSelection(entryObject);
             if (!changed) {
                 continue;
             }
@@ -524,14 +511,36 @@ namespace {
             }
 
             ++changedEntryRows;
-            static_cast<void>(entryList.SetElement(index, entryObject));
+            static_cast<void>(itemList->entryList.SetElement(index, entryObject));
         }
 
-        if (changedEntryRows == 0) {
-            return false;
+        return changedEntryRows > 0 && InvalidateInventoryListData(*inventoryMenu);
+    }
+
+    void DeselectInventoryItem(RE::InventoryMenu& a_menu) {
+        auto* itemList = a_menu.GetRuntimeData().itemList;
+        if (!itemList) {
+            return;
         }
 
-        return InvalidateInventoryListData(*inventoryMenu);
+        static_cast<void>(itemList->root.SetMember("selectedIndex", RE::GFxValue {-1.0}));
+    }
+
+    void RefreshInventoryMenuAfterVanillaRingSlotMove() {
+        auto* inventoryMenu = GetInventoryMenu();
+        if (!inventoryMenu) {
+            return;
+        }
+
+        DeselectInventoryItem(*inventoryMenu);
+        if (auto* itemList = inventoryMenu->GetRuntimeData().itemList) {
+            if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                itemList->Update(player);
+            }
+        }
+        DeselectInventoryItem(*inventoryMenu);
+        static_cast<void>(InvalidateInventoryListData(*inventoryMenu));
+        RefreshFavoritesRows();
     }
 
     [[nodiscard]] bool RedrawFavoritesRows(RE::GFxValue& a_itemList) {
@@ -598,8 +607,7 @@ namespace {
             return false;
         }
 
-        const auto redrawn = RedrawFavoritesRows(itemList);
-        return redrawn;
+        return RedrawFavoritesRows(itemList);
     }
 
     void QueueInventoryRefresh() {
@@ -608,15 +616,9 @@ namespace {
         });
     }
 
-    void QueueFavoritesRefresh() {
-        stl::add_ui_task([] {
-            static_cast<void>(RestampFavoritesRowsFromEntryData());
-        });
-    }
-
     void QueueEquipStateRefresh() {
         QueueInventoryRefresh();
-        QueueFavoritesRefresh();
+        RefreshFavoritesRows();
     }
 
     [[nodiscard]] std::optional<LeftSelectionRequest> BuildSelectionFromEntry(RE::InventoryEntryData& a_entry) {
@@ -625,7 +627,12 @@ namespace {
             return std::nullopt;
         }
 
-        auto customSelection = Inventory::ResolveCustomSelection(a_entry);
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player || Inventory::GetCount(*player, *ring) <= 0) {
+            return std::nullopt;
+        }
+
+        auto customSelection = Inventory::ResolveEntryCustomSelection(a_entry);
         if (customSelection.failure != Inventory::EntryCustomFailure::kNone) {
             return LeftSelectionRequest {
                 .ring = ring,
@@ -655,31 +662,90 @@ namespace {
         };
     }
 
-    enum class ToggleResult {
+    enum class RingToggleResult {
         kFailed,
         kChanged,
-        kQueued,
+        kHandled,
     };
 
     [[nodiscard]] bool IsSelectedLeftRing(
         const LeftSelectionRequest& a_request,
-        const DisplaySlot a_channel,
+        const RingTarget a_target,
         const RE::FormID a_formID
     ) {
-        const auto selection = Selection::Get(a_channel);
+        const auto selection = Selection::Get(a_target);
+        bool selected = false;
         if (a_request.customKey) {
-            return selection.MatchesCustomEnchantment(a_formID, *a_request.customKey, a_request.customIdentity);
+            selected = selection.MatchesCustomEnchantment(a_formID, *a_request.customKey, a_request.customIdentity);
+        } else {
+            selected = selection.MatchesForm(a_formID);
         }
 
-        return selection.MatchesForm(a_formID);
+        return selected;
     }
 
-    [[nodiscard]] ToggleResult SelectCustomRing(
+    [[nodiscard]] RingToggleResult MoveVanillaRingSlotFormToVirtual(
+        const RingTarget a_target,
+        RE::TESObjectARMO& a_ring,
+        const SelectionOrigin a_origin
+    ) {
+        if (a_origin == SelectionOrigin::kInventoryMenu) {
+            if (auto* inventoryMenu = GetInventoryMenu()) {
+                DeselectInventoryItem(*inventoryMenu);
+            }
+
+            const auto result = Selection::MoveVanillaRingSlotFormToVirtual(a_ring.GetFormID(), a_target);
+            if (result.inventoryChanged) {
+                RefreshInventoryMenuAfterVanillaRingSlotMove();
+            } else if (result.selectionChanged) {
+                QueueEquipStateRefresh();
+            }
+
+            return result.ChangedState() ? RingToggleResult::kHandled : RingToggleResult::kFailed;
+        }
+
+        Selection::QueueVanillaRingSlotFormToVirtual(a_ring.GetFormID(), a_target);
+        return RingToggleResult::kHandled;
+    }
+
+    [[nodiscard]] RingToggleResult MoveVanillaRingSlotCustomToVirtual(
+        const RingTarget a_target,
+        RE::TESObjectARMO& a_ring,
+        const Inventory::CustomEnchantmentKey& a_customKey,
+        const std::optional<Inventory::ExtraListIdentity>& a_customIdentity,
+        const SelectionOrigin a_origin
+    ) {
+        if (a_origin == SelectionOrigin::kInventoryMenu) {
+            if (auto* inventoryMenu = GetInventoryMenu()) {
+                DeselectInventoryItem(*inventoryMenu);
+            }
+
+            const auto result = Selection::MoveVanillaRingSlotCustomToVirtual(
+                a_ring.GetFormID(),
+                a_customKey,
+                a_customIdentity,
+                a_target
+            );
+            if (result.inventoryChanged) {
+                RefreshInventoryMenuAfterVanillaRingSlotMove();
+            } else if (result.selectionChanged) {
+                QueueEquipStateRefresh();
+            }
+
+            return result.ChangedState() ? RingToggleResult::kHandled : RingToggleResult::kFailed;
+        }
+
+        Selection::QueueVanillaRingSlotCustomToVirtual(a_ring.GetFormID(), a_customKey, a_customIdentity, a_target);
+        return RingToggleResult::kHandled;
+    }
+
+    [[nodiscard]] RingToggleResult SelectCustomRing(
         RE::PlayerCharacter& a_player,
-        const DisplaySlot a_channel,
+        const RingTarget a_target,
         RE::TESObjectARMO& a_ring,
         const LeftSelectionRequest& a_request,
-        const Inventory::CustomEnchantmentKey& a_customKey
+        const Inventory::CustomEnchantmentKey& a_customKey,
+        const SelectionOrigin a_origin
     ) {
         const auto
             sourceMatches = Inventory::FindSourceMatches(a_player, a_ring, a_customKey, a_request.customIdentity);
@@ -689,93 +755,89 @@ namespace {
             sourceExtraList = a_request.sourceExtraList;
         }
         if (!sourceExtraList || !sourceMatches.HasMatch()) {
-            return ToggleResult::kFailed;
+            return RingToggleResult::kFailed;
         }
 
         if (!Inventory::MatchesCustomSelection(sourceExtraList, a_customKey, a_request.customIdentity)) {
-            return ToggleResult::kFailed;
+            return RingToggleResult::kFailed;
         }
 
         if (sourceMatches.rightWornExtraList && !sourceMatches.CanWearSameKeyInBothHands()) {
-            Selection::RequestCustomMove(a_ring.GetFormID(), a_customKey, a_request.customIdentity, a_channel, true);
-            return ToggleResult::kQueued;
+            return MoveVanillaRingSlotCustomToVirtual(
+                a_target,
+                a_ring,
+                a_customKey,
+                a_request.customIdentity,
+                a_origin
+            );
         }
 
-        Selection::SetCustom(a_ring, a_customKey, a_request.customIdentity, a_channel);
-        return ToggleResult::kChanged;
+        const auto changed = Selection::SetCustom(a_ring, a_customKey, a_request.customIdentity, a_target);
+        return changed ? RingToggleResult::kChanged : RingToggleResult::kFailed;
     }
 
-    [[nodiscard]] ToggleResult SelectFormRing(
+    [[nodiscard]] RingToggleResult SelectFormRing(
         RE::PlayerCharacter& a_player,
-        const DisplaySlot a_channel,
-        RE::TESObjectARMO& a_ring
+        const RingTarget a_target,
+        RE::TESObjectARMO& a_ring,
+        const SelectionOrigin a_origin
     ) {
-        const auto sourceState = Inventory::GetSourceState(a_player, a_ring);
-        if (sourceState.rightWorn && !sourceState.CanWearSameFormInBothHands()) {
-            Selection::RequestMove(a_ring.GetFormID(), a_channel, true);
-            return ToggleResult::kQueued;
+        const auto sourceMatches = Inventory::FindFormOnlyMatches(a_player, a_ring);
+        if (!sourceMatches.HasMatch()) {
+            QueueEquipStateRefresh();
+            return RingToggleResult::kHandled;
         }
 
-        Selection::Set(std::addressof(a_ring), a_channel);
-        return ToggleResult::kChanged;
+        if (sourceMatches.rightWorn && !sourceMatches.CanWearSameFormInBothHands()) {
+            return MoveVanillaRingSlotFormToVirtual(a_target, a_ring, a_origin);
+        }
+
+        const auto changed = Selection::Set(std::addressof(a_ring), a_target);
+        return changed ? RingToggleResult::kChanged : RingToggleResult::kFailed;
     }
 
-    bool ToggleRingForLeftHand(const LeftSelectionRequest& a_request) {
+    bool ToggleRingForLeftHand(const LeftSelectionRequest& a_request, const SelectionOrigin a_origin) {
         auto* ring = a_request.ring;
         if (!ring || a_request.blocked) {
             return false;
         }
 
         const auto formID = ring->GetFormID();
-        const auto channel = GetSelectionChannelForRing(*ring);
-        if (IsSelectedLeftRing(a_request, channel, formID)) {
-            Selection::Clear(channel);
+        constexpr auto target = kDefaultLeftEquipTarget;
+        auto sound = RingSounds::Event::kNone;
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (IsSelectedLeftRing(a_request, target, formID)) {
+            Selection::Clear(target);
+            sound = RingSounds::Event::kUnequip;
         } else {
-            auto* player = RE::PlayerCharacter::GetSingleton();
             if (!player) {
                 return false;
             }
 
-            auto result = ToggleResult::kFailed;
+            auto result = RingToggleResult::kFailed;
             if (a_request.customKey) {
-                result = SelectCustomRing(*player, channel, *ring, a_request, *a_request.customKey);
+                result = SelectCustomRing(*player, target, *ring, a_request, *a_request.customKey, a_origin);
             } else {
-                result = SelectFormRing(*player, channel, *ring);
+                result = SelectFormRing(*player, target, *ring, a_origin);
             }
-            if (result == ToggleResult::kFailed) {
+            if (result == RingToggleResult::kFailed) {
                 return false;
             }
 
-            if (result == ToggleResult::kQueued) {
+            if (result == RingToggleResult::kHandled) {
                 return true;
             }
+            sound = RingSounds::Event::kEquip;
         }
 
-        ClonedEquipment::RequestRefreshWithSounds(channel);
+        VirtualRings::RequestRefresh(
+            VirtualRings::RefreshOptions {
+                .soundTarget = target,
+                .sound = sound,
+            }
+        );
         QueueEquipStateRefresh();
         return true;
-    }
-
-    bool SelectEntryForLeftHandImpl(RE::InventoryEntryData* a_entry) {
-        if (!a_entry) {
-            return false;
-        }
-
-        auto* ring = Inventory::AsRing(a_entry->GetObject());
-        if (!ring) {
-            return false;
-        }
-
-        auto request = BuildSelectionFromEntry(*a_entry);
-        if (!request) {
-            return false;
-        }
-
-        if (request->blocked) {
-            return true;
-        }
-
-        return ToggleRingForLeftHand(*request);
     }
 
     class MenuEventSink : public RE::BSTEventSink<RE::MenuOpenCloseEvent> {
@@ -797,13 +859,12 @@ namespace {
                 if (a_event->opening) {
                     QueueInventoryRefresh();
                 }
-
                 return RE::BSEventNotifyControl::kContinue;
             }
 
             if (a_event->menuName == RE::FavoritesMenu::MENU_NAME.data()) {
                 if (a_event->opening) {
-                    QueueFavoritesRefresh();
+                    RefreshFavoritesRows();
                 }
             }
 
@@ -831,21 +892,44 @@ void RegisterInventoryData() {
     }
 }
 
-bool SelectEntryForLeftHand(RE::InventoryEntryData* a_entry) {
-    return SelectEntryForLeftHandImpl(a_entry);
+bool SelectEntryForLeftHand(RE::InventoryEntryData* a_entry, const SelectionOrigin a_origin) {
+    if (!a_entry) {
+        return false;
+    }
+
+    auto request = BuildSelectionFromEntry(*a_entry);
+    if (!request) {
+        return false;
+    }
+
+    if (request->blocked) {
+        return true;
+    }
+
+    return ToggleRingForLeftHand(*request, a_origin);
 }
 
-void RefreshRows() {
+void RefreshRingRows() {
     QueueEquipStateRefresh();
 }
 
-void RefreshEquipmentSoon(const RE::FormID a_ringFormID) {
+void RefreshFavoritesRows() {
+    stl::add_ui_task([] {
+        static_cast<void>(RestampFavoritesRowsFromEntryData());
+    });
+}
+
+void RefreshItemRowsForRing(RE::Actor& a_actor, const RE::TESObjectARMO* a_ring) {
+    RE::SendUIMessage::SendInventoryUpdateMessage(std::addressof(a_actor), a_ring);
+    RefreshRingRows();
+}
+
+void QueueRefreshAfterRingEquip(const RE::FormID a_ringFormID) {
     stl::add_task([a_ringFormID] {
-        ClonedEquipment::RequestRefresh();
+        VirtualRings::RequestRefresh();
         if (auto* player = RE::PlayerCharacter::GetSingleton()) {
             auto* ring = RE::TESForm::LookupByID<RE::TESObjectARMO>(a_ringFormID);
-            RE::SendUIMessage::SendInventoryUpdateMessage(player, ring);
-            RefreshRows();
+            RefreshItemRowsForRing(*player, ring);
         }
     });
 }

@@ -28,6 +28,20 @@ namespace {
         return nullptr;
     }
 
+    [[nodiscard]] RE::ExtraDataList* FindRightWornFormOnlyExtraList(RE::InventoryEntryData* a_entry) {
+        if (!a_entry || !a_entry->extraLists) {
+            return nullptr;
+        }
+
+        for (auto* extraList : *a_entry->extraLists) {
+            if (Inventory::IsRightWorn(extraList) && !Inventory::HasCustomEnchantment(extraList)) {
+                return extraList;
+            }
+        }
+
+        return nullptr;
+    }
+
     [[nodiscard]] bool EntryContainsExtraList(
         const RE::InventoryEntryData* a_entry,
         const RE::ExtraDataList* a_extraList
@@ -38,6 +52,21 @@ namespace {
 
         return std::ranges::find(*a_entry->extraLists, a_extraList) != a_entry->extraLists->end();
     }
+
+    [[nodiscard]] std::int32_t CountCustomCopies(const RE::InventoryEntryData* a_entry) {
+        if (!a_entry || !a_entry->extraLists) {
+            return 0;
+        }
+
+        auto count = std::int32_t {0};
+        for (auto* extraList : *a_entry->extraLists) {
+            if (Inventory::HasCustomEnchantment(extraList)) {
+                count += std::max(extraList->GetCount(), 1);
+            }
+        }
+        return count;
+    }
+
 }
 
 bool EntryCustomSelection::HasCustomEnchantment() const {
@@ -49,6 +78,14 @@ bool CustomMatchState::HasMatch() const {
 }
 
 bool CustomMatchState::CanWearSameKeyInBothHands() const {
+    return count >= 2;
+}
+
+bool FormOnlyMatchState::HasMatch() const {
+    return count > 0;
+}
+
+bool FormOnlyMatchState::CanWearSameFormInBothHands() const {
     return count >= 2;
 }
 
@@ -291,7 +328,23 @@ CustomMatchState FindSourceMatches(
     return FindCustomMatches(FindEntry(a_actor, a_ring), a_key, a_identity);
 }
 
-EntryCustomSelection ResolveCustomSelection(RE::InventoryEntryData& a_entry) {
+FormOnlyMatchState FindFormOnlyMatches(RE::Actor& a_actor, const RE::TESObjectARMO& a_ring) {
+    auto* entry = FindEntry(a_actor, a_ring);
+    const auto totalCount = GetCount(a_actor, a_ring);
+    const auto customCount = CountCustomCopies(entry);
+    const auto formOnlyCount = std::max(totalCount - customCount, 0);
+    auto* rightWornExtraList = FindRightWornFormOnlyExtraList(entry);
+
+    FormOnlyMatchState state {
+        .rightWornExtraList = rightWornExtraList,
+        .count = formOnlyCount,
+        .rightWorn = rightWornExtraList != nullptr || (entry && !entry->extraLists && entry->IsWorn(false)),
+    };
+
+    return state;
+}
+
+EntryCustomSelection ResolveEntryCustomSelection(RE::InventoryEntryData& a_entry) {
     EntryCustomSelection selection;
     if (!a_entry.extraLists) {
         return selection;
@@ -344,10 +397,6 @@ bool IsRing(const RE::TESObjectARMO* a_armor) {
     return a_armor
            && a_armor->HasPartOf(RE::BGSBipedObjectForm::BipedObjectSlot::kRing)
            && !a_armor->armorAddons.empty();
-}
-
-bool SourceRingState::CanWearSameFormInBothHands() const {
-    return count >= 2;
 }
 
 bool SourceRingState::HasRightWornEnchantment() const {
