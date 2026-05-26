@@ -155,6 +155,17 @@ namespace {
         }
     }
 
+    void SetInventoryItem3DVisibility(const RE::IMenu& a_menu, RE::GFxMovieView& a_movie, const bool a_visible) {
+        if (!a_menu.fxDelegate) {
+            return;
+        }
+
+        std::array<RE::GFxValue, 2> args;
+        args[0].SetNumber(0.0);
+        args[1].SetBoolean(a_visible);
+        a_menu.fxDelegate->Callback(&a_movie, "UpdateItem3D", args.data(), static_cast<std::uint32_t>(args.size()));
+    }
+
     [[nodiscard]] bool Invoke(
         RE::GFxMovieView& a_movie,
         const char* a_path,
@@ -322,6 +333,9 @@ namespace {
 
         if (a_restoreHostControls) {
             SetHostControlsEnabled(*session->movie, session->hostMenu, true);
+            if (session->hostMenu == Data::HostMenu::kInventory && session->menu) {
+                SetInventoryItem3DVisibility(*session->menu, *session->movie, true);
+            }
         }
 
         if (session->menu && session->menu->fxDelegate) {
@@ -454,6 +468,9 @@ bool Show(Data a_data) {
     if (data && menu && movie && menu->fxDelegate && handler) {
         menu->fxDelegate->RegisterHandler(handler);
         SetHostControlsEnabled(*movie, data->hostMenu, false);
+        if (data->hostMenu == Data::HostMenu::kInventory) {
+            SetInventoryItem3DVisibility(*menu, *movie, false);
+        }
         {
             std::scoped_lock lock(g_lock);
             g_session = Session {
