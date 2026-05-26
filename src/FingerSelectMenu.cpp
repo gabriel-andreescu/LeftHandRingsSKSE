@@ -336,6 +336,7 @@ namespace {
             if (session->hostMenu == Data::HostMenu::kInventory && session->menu) {
                 SetInventoryItem3DVisibility(*session->menu, *session->movie, true);
             }
+            static_cast<void>(InvokeClip(*session->movie, "RestoreFocus", nullptr, 0));
         }
 
         if (session->menu && session->menu->fxDelegate) {
