@@ -5,6 +5,12 @@
 #include "Selection.h"
 #include "UI.h"
 
+namespace {
+bool g_cancelInputSuppressed = false;
+RE::INPUT_DEVICE g_cancelInputDevice {};
+std::uint32_t g_cancelInputCode = 0;
+}
+
 void EventListener::Register() {
     auto* listener = GetSingleton();
     auto* eventSource = RE::ScriptEventSourceHolder::GetSingleton();
@@ -34,7 +40,7 @@ void EventListener::Register() {
         return;
     }
 
-    input->AddEventSink(static_cast<RE::BSInputDeviceManager::Sink*>(listener));
+    input->PrependEventSink(static_cast<RE::BSInputDeviceManager::Sink*>(listener));
     logger::info("EventListener registered");
 }
 
@@ -86,13 +92,34 @@ EventListener::Control EventListener::ProcessEvent(
     const InputEvents* a_event,
     [[maybe_unused]] RE::BSTEventSource<InputEvents>* a_eventSource
 ) {
-    if (!FingerSelectMenu::IsOpen()) {
+    const auto fingerSelectOpen = FingerSelectMenu::IsOpen();
+    if (!fingerSelectOpen && !g_cancelInputSuppressed) {
         return Control::kContinue;
     }
 
     for (auto* event = a_event ? *a_event : nullptr; event; event = event->next) {
         const auto* button = event->AsButtonEvent();
-        if (!button || !button->IsDown()) {
+        if (!button) {
+            continue;
+        }
+
+        const auto device = button->GetDevice();
+        const auto key = button->GetIDCode();
+
+        if (g_cancelInputSuppressed && device == g_cancelInputDevice && key == g_cancelInputCode) {
+            if (button->Value() <= 0.0F) {
+                g_cancelInputSuppressed = false;
+                return Control::kStop;
+            }
+
+            if (!button->IsDown()) {
+                return Control::kStop;
+            }
+
+            g_cancelInputSuppressed = false;
+        }
+
+        if (!fingerSelectOpen || !button->IsDown()) {
             continue;
         }
 
@@ -102,7 +129,6 @@ EventListener::Control EventListener::ProcessEvent(
         }
 
         if (!isCancel) {
-            const auto key = button->GetIDCode();
             switch (button->GetDevice()) {
                 case RE::INPUT_DEVICE::kKeyboard:
                     isCancel = key == RE::BSKeyboardDevice::Keys::kEscape || key == RE::BSKeyboardDevice::Keys::kTab;
@@ -120,6 +146,9 @@ EventListener::Control EventListener::ProcessEvent(
         }
 
         if (isCancel) {
+            g_cancelInputSuppressed = true;
+            g_cancelInputDevice = device;
+            g_cancelInputCode = key;
             FingerSelectMenu::Cancel();
             return Control::kStop;
         }

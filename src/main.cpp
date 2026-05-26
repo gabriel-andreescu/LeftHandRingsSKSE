@@ -24,10 +24,6 @@ void QueueDelayedVirtualRingRefresh() {
 }
 
 void MessageHandler(SKSE::MessagingInterface::Message* a_msg) {
-    if (!a_msg) {
-        return;
-    }
-
     switch (a_msg->type) {
         case SKSE::MessagingInterface::kPreLoadGame:
             EventBindings::Revert();
