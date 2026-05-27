@@ -49,6 +49,9 @@ namespace {
     constexpr auto kSkyUIItemMenuContext = 3;
     constexpr auto kFingerSelectTitle = "ASSIGN RING";
     constexpr auto kEmptyRingLabel = "-";
+    constexpr auto kEquipActionLabel = "Equip";
+    constexpr auto kUnequipActionLabel = "Unequip";
+    constexpr auto kReplaceActionLabel = "Replace";
 
     struct RowSelection {
         Selection::Kind kind {Selection::Kind::kNone};
@@ -1326,12 +1329,6 @@ namespace {
         auto* ring = Inventory::AsRing(RE::TESForm::LookupByID<RE::TESObjectARMO>(a_selection.sourceFormID));
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!ring || !player || Inventory::GetCount(*player, *ring) <= 0) {
-            const auto* reason = "noInventoryCount";
-            if (!ring) {
-                reason = "noRing";
-            } else if (!player) {
-                reason = "noPlayer";
-            }
             return std::nullopt;
         }
 
@@ -1374,22 +1371,61 @@ namespace {
         return Inventory::FindFormOnlyMatches(*player, *a_selection.ring).rightWorn;
     }
 
-    [[nodiscard]] std::optional<RingTarget> FindSelectedTargetOnHand(
+    [[nodiscard]] bool IsSelectedRingTarget(const RingSelectionData& a_selection, const RingTarget a_target) {
+        if (!a_selection.ring) {
+            return false;
+        }
+
+        if (a_target == kVanillaRingTarget) {
+            return IsRingInVanillaRingSlot(a_selection);
+        }
+
+        return IsSelectedRing(a_selection, a_target, a_selection.ring->GetFormID());
+    }
+
+    [[nodiscard]] std::vector<RingTarget> CollectSelectedTargetsOnHand(
         const RingSelectionData& a_selection,
         const RingHand a_hand
     ) {
-        if (!a_selection.ring) {
-            return std::nullopt;
-        }
-
-        if (a_hand == RingHand::kRight && IsRingInVanillaRingSlot(a_selection)) {
-            return kVanillaRingTarget;
-        }
+        std::vector<RingTarget> targets;
+        targets.reserve(FingerSelectMenu::kRowCount);
 
         for (const auto target : kVirtualRingTargets) {
-            if (target.hand == a_hand && IsSelectedRing(a_selection, target, a_selection.ring->GetFormID())) {
-                return target;
+            if (target.hand == a_hand && IsSelectedRingTarget(a_selection, target)) {
+                targets.push_back(target);
             }
+        }
+
+        if (a_hand == RingHand::kRight && IsSelectedRingTarget(a_selection, kVanillaRingTarget)) {
+            targets.push_back(kVanillaRingTarget);
+        }
+
+        return targets;
+    }
+
+    [[nodiscard]] bool ShouldOpenFingerSelectorForHand(const RingSelectionData& a_selection, const RingHand a_hand) {
+        const auto selectedTargets = CollectSelectedTargetsOnHand(a_selection, a_hand);
+        if (selectedTargets.empty()) {
+            return false;
+        }
+
+        return selectedTargets.size() > 1 || selectedTargets.front() != DefaultTargetForHand(a_hand);
+    }
+
+    [[nodiscard]] std::optional<RingTarget> FindPreferredSelectedTargetOnHand(
+        const RingSelectionData& a_selection,
+        const RingHand a_hand
+    ) {
+        const auto selectedTargets = CollectSelectedTargetsOnHand(a_selection, a_hand);
+        const auto nonIndexTarget = std::ranges::find_if(selectedTargets, [](const auto target) {
+            return target.finger != RingFinger::kIndex;
+        });
+        if (nonIndexTarget != selectedTargets.end()) {
+            return *nonIndexTarget;
+        }
+
+        if (!selectedTargets.empty()) {
+            return selectedTargets.front();
         }
 
         return std::nullopt;
@@ -1491,7 +1527,28 @@ namespace {
         return GetVirtualTargetRingLabel(a_target);
     }
 
+    [[nodiscard]] bool IsFingerTargetOccupied(const RingTarget a_target) {
+        if (a_target == kVanillaRingTarget) {
+            return GetRightWornRingLabel() != kEmptyRingLabel;
+        }
+
+        return Selection::Get(a_target).kind != Selection::Kind::kNone;
+    }
+
+    [[nodiscard]] std::string GetFingerRowActionLabel(const RingSelectionData& a_selection, const RingTarget a_target) {
+        if (IsSelectedRingTarget(a_selection, a_target)) {
+            return kUnequipActionLabel;
+        }
+
+        if (IsFingerTargetOccupied(a_target)) {
+            return kReplaceActionLabel;
+        }
+
+        return kEquipActionLabel;
+    }
+
     [[nodiscard]] std::array<FingerSelectMenu::Row, FingerSelectMenu::kRowCount> BuildFingerRows(
+        const RingSelectionData& a_selection,
         const RingHand a_hand
     ) {
         constexpr std::array kFingerOrder {
@@ -1513,6 +1570,7 @@ namespace {
                 .target = target,
                 .fingerLabel = std::string {FingerLabel(finger)},
                 .equippedRingLabel = GetEquippedRingLabel(target),
+                .actionLabel = GetFingerRowActionLabel(a_selection, target),
             };
         }
         return rows;
@@ -1554,8 +1612,8 @@ namespace {
             return ToggleRingForTarget(a_selection, target, a_origin);
         }
 
-        auto rows = BuildFingerRows(a_hand);
-        const auto selectedTarget = FindSelectedTargetOnHand(a_selection, a_hand)
+        auto rows = BuildFingerRows(a_selection, a_hand);
+        const auto selectedTarget = FindPreferredSelectedTargetOnHand(a_selection, a_hand)
                                         .value_or(DefaultTargetForHand(a_hand));
         const auto startIndex = GetRowIndex(rows, selectedTarget);
         const auto storedSelection = StoreSelection(a_selection, a_origin);
@@ -1724,11 +1782,6 @@ bool UseRingFromMenuEntry(RE::InventoryEntryData* a_entry, const RingHand a_hand
         return false;
     }
 
-    const auto trigger = GetFingerSelectTrigger();
-    if (a_hand == RingHand::kRight && !trigger.requested) {
-        return false;
-    }
-
     auto selection = BuildSelectionFromEntry(*a_entry);
     if (!selection) {
         return false;
@@ -1738,9 +1791,19 @@ bool UseRingFromMenuEntry(RE::InventoryEntryData* a_entry, const RingHand a_hand
         return true;
     }
 
+    const auto trigger = GetFingerSelectTrigger();
     if (trigger.requested) {
         ShowFingerSelector(*selection, a_hand, a_origin, trigger.inputDevice);
         return true;
+    }
+
+    if (ShouldOpenFingerSelectorForHand(*selection, a_hand)) {
+        ShowFingerSelector(*selection, a_hand, a_origin, GetPreferredInputDevice());
+        return true;
+    }
+
+    if (a_hand == RingHand::kRight) {
+        return false;
     }
 
     return ToggleRingForTarget(*selection, kDefaultLeftEquipTarget, a_origin);

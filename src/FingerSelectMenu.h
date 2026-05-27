@@ -15,6 +15,7 @@ struct Row {
     RingTarget target;
     std::string fingerLabel;
     std::string equippedRingLabel;
+    std::string actionLabel {"Equip"};
     bool enabled {true};
 };
 

@@ -220,12 +220,13 @@ namespace {
         auto applied = true;
         for (std::size_t index = 0; index < a_data.rows.size(); ++index) {
             const auto& row = a_data.rows[index];
-            std::array<RE::GFxValue, 5> args;
+            std::array<RE::GFxValue, 6> args;
             args[0].SetNumber(static_cast<double>(index));
             args[1].SetNumber(static_cast<double>(ToIndex(row.target)));
             args[2].SetString(row.fingerLabel.c_str());
             args[3].SetString(row.equippedRingLabel.c_str());
             args[4].SetBoolean(row.enabled);
+            args[5].SetString(row.actionLabel.c_str());
 
             if (!InvokeClip(a_movie, "SetRow", args.data(), static_cast<std::uint32_t>(args.size()))) {
                 logger::warn("FingerSelectMenu: row update failed | index={}", index);
@@ -355,7 +356,7 @@ namespace {
             return;
         }
 
-        data->onResult(std::move(a_result));
+        data->onResult(a_result);
     }
 
     class EmbeddedHandler final : public RE::FxDelegateHandler {
