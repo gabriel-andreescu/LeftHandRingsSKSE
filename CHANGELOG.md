@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 - Unreleased
+## 0.3.0 - 2026-05-28
 
 - feat: add translation support for UI text
 - feat: add configurable finger selection modifier keybinds

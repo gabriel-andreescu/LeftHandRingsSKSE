@@ -8,12 +8,12 @@ set(VCPKG_INSTALL_OPTIONS "--no-print-usage")
 
 project(
         LeftHandRingsSKSE
-        VERSION 0.2.0
-        DESCRIPTION "Native left-hand ring support"
+        VERSION 0.3.0
+        DESCRIPTION "Native multi-ring support"
         LANGUAGES CXX
 )
 
-set(OPTIONAL_ASSETS_VERSION 0.1.1)
+set(OPTIONAL_ASSETS_VERSION 0.2.0)
 
 option(LHRS_ENABLE_PRECOMPILED_HEADERS "Enable CMake precompiled headers" ON)
 
