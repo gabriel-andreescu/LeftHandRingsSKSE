@@ -2,6 +2,7 @@
 
 #include "FingerSelectMenu.h"
 #include "Inventory.h"
+#include "Localization.h"
 #include "RingFootprints.h"
 #include "RingSounds.h"
 #include "Selection.h"
@@ -51,12 +52,23 @@ namespace {
     constexpr auto kSkyUIGameplayContext = 0;
     constexpr auto kSkyUIItemMenuContext = 3;
     constexpr auto kSkyUIShiftKeyCode = 42;
-    constexpr auto kFingerSelectTitle = "ASSIGN RING";
-    constexpr auto kFingerSelectHintLabel = "Finger";
+    constexpr auto kFingerSelectTitleKey = "$LHRS_FingerSelect_Title";
+    constexpr auto kFingerSelectFingerHeaderKey = "$LHRS_FingerSelect_FingerHeader";
+    constexpr auto kFingerSelectEquippedHeaderKey = "$LHRS_FingerSelect_EquippedHeader";
+    constexpr auto kFingerSelectEquipActionKey = "$LHRS_FingerSelect_Action_Equip";
+    constexpr auto kFingerSelectUnequipActionKey = "$LHRS_FingerSelect_Action_Unequip";
+    constexpr auto kFingerSelectReplaceActionKey = "$LHRS_FingerSelect_Action_Replace";
+    constexpr auto kFingerSelectCancelActionKey = "$LHRS_FingerSelect_Action_Cancel";
+    constexpr auto kInventoryFingerHintKey = "$LHRS_Inventory_FingerHint";
+    constexpr auto kInventoryLeftHandShortKey = "$LHRS_Inventory_LeftHandShort";
+    constexpr auto kInventoryRightHandShortKey = "$LHRS_Inventory_RightHandShort";
+    constexpr auto kFingerThumbKey = "$LHRS_Finger_Thumb";
+    constexpr auto kFingerIndexKey = "$LHRS_Finger_Index";
+    constexpr auto kFingerMiddleKey = "$LHRS_Finger_Middle";
+    constexpr auto kFingerRingKey = "$LHRS_Finger_Ring";
+    constexpr auto kFingerPinkyKey = "$LHRS_Finger_Pinky";
+    constexpr auto kMultiFingerRingMessageKey = "$LHRS_Message_MultiFingerRing";
     constexpr auto kEmptyRingLabel = "-";
-    constexpr auto kEquipActionLabel = "Equip";
-    constexpr auto kUnequipActionLabel = "Unequip";
-    constexpr auto kReplaceActionLabel = "Replace";
 
     struct RowSelection {
         Selection::Kind kind {Selection::Kind::kNone};
@@ -90,6 +102,39 @@ namespace {
         bool requested {false};
         RE::INPUT_DEVICE inputDevice {RE::INPUT_DEVICE::kKeyboard};
     };
+
+    [[nodiscard]] FingerSelectMenu::Labels GetFingerSelectLabels() {
+        return FingerSelectMenu::Labels {
+            Localization::Translate(kFingerSelectTitleKey, "ASSIGN RING"),
+            Localization::Translate(kFingerSelectFingerHeaderKey, "FINGER"),
+            Localization::Translate(kFingerSelectEquippedHeaderKey, "EQUIPPED RING"),
+            Localization::Translate(kFingerSelectEquipActionKey, "Equip"),
+            Localization::Translate(kFingerSelectUnequipActionKey, "Unequip"),
+            Localization::Translate(kFingerSelectReplaceActionKey, "Replace"),
+            Localization::Translate(kFingerSelectCancelActionKey, "Cancel"),
+        };
+    }
+
+    [[nodiscard]] std::string GetFingerLabel(const RingFinger a_finger) {
+        switch (a_finger) {
+            case RingFinger::kThumb:  return Localization::Translate(kFingerThumbKey, "Thumb");
+            case RingFinger::kIndex:  return Localization::Translate(kFingerIndexKey, "Index");
+            case RingFinger::kMiddle: return Localization::Translate(kFingerMiddleKey, "Middle");
+            case RingFinger::kRing:   return Localization::Translate(kFingerRingKey, "Ring");
+            case RingFinger::kPinky:  return Localization::Translate(kFingerPinkyKey, "Pinky");
+        }
+
+        return "Unknown";
+    }
+
+    [[nodiscard]] std::string GetInventoryHandLabel(const RingHand a_hand) {
+        switch (a_hand) {
+            case RingHand::kLeft:  return Localization::Translate(kInventoryLeftHandShortKey, "L");
+            case RingHand::kRight: return Localization::Translate(kInventoryRightHandShortKey, "R");
+        }
+
+        return "?";
+    }
 
     [[nodiscard]] RE::InventoryMenu* GetInventoryMenu() {
         auto* ui = RE::UI::GetSingleton();
@@ -217,11 +262,10 @@ namespace {
     }
 
     [[nodiscard]] std::string FormatInventoryTargetLabel(const RingTarget a_target) {
-        std::string label;
+        auto label = GetInventoryHandLabel(a_target.hand);
         label.reserve(8);
-        label.push_back(TargetSideCode(a_target));
         label.push_back(' ');
-        label.append(FingerLabel(a_target.finger));
+        label.append(GetFingerLabel(a_target.finger));
         return label;
     }
 
@@ -551,7 +595,8 @@ namespace {
         a_movie.CreateObject(std::addressof(a_result));
 
         RE::GFxValue text;
-        text.SetString(kFingerSelectHintLabel);
+        const auto label = Localization::Translate(kInventoryFingerHintKey, "Finger");
+        text.SetString(label.c_str());
         a_result.SetMember("text", text);
 
         RE::GFxValue controls;
@@ -1705,21 +1750,26 @@ namespace {
         return Selection::Get(a_target).kind != Selection::Kind::kNone;
     }
 
-    [[nodiscard]] std::string GetFingerRowActionLabel(const RingSelectionData& a_selection, const RingTarget a_target) {
+    [[nodiscard]] std::string GetFingerRowActionLabel(
+        const RingSelectionData& a_selection,
+        const RingTarget a_target,
+        const FingerSelectMenu::Labels& a_labels
+    ) {
         if (IsSelectedRingTarget(a_selection, a_target)) {
-            return kUnequipActionLabel;
+            return a_labels.unequipAction;
         }
 
         if (IsFingerTargetOccupied(a_target)) {
-            return kReplaceActionLabel;
+            return a_labels.replaceAction;
         }
 
-        return kEquipActionLabel;
+        return a_labels.equipAction;
     }
 
     [[nodiscard]] std::array<FingerSelectMenu::Row, FingerSelectMenu::kRowCount> BuildFingerRows(
         const RingSelectionData& a_selection,
-        const RingHand a_hand
+        const RingHand a_hand,
+        const FingerSelectMenu::Labels& a_labels
     ) {
         constexpr std::array kFingerOrder {
             RingFinger::kThumb,
@@ -1738,9 +1788,9 @@ namespace {
             };
             rows[index] = FingerSelectMenu::Row {
                 .target = target,
-                .fingerLabel = std::string {FingerLabel(finger)},
+                .fingerLabel = GetFingerLabel(finger),
                 .equippedRingLabel = GetEquippedRingLabel(target),
-                .actionLabel = GetFingerRowActionLabel(a_selection, target),
+                .actionLabel = GetFingerRowActionLabel(a_selection, target, a_labels),
             };
         }
         return rows;
@@ -1777,12 +1827,17 @@ namespace {
         }
 
         if (RingFootprints::GetSourceRingFootprint(*ring).IsMultiFinger()) {
-            RE::SendHUDMessage::ShowHUDMessage("This ring occupies multiple fingers.", nullptr, true);
+            const auto message = Localization::Translate(
+                kMultiFingerRingMessageKey,
+                "This ring occupies multiple fingers."
+            );
+            RE::SendHUDMessage::ShowHUDMessage(message.c_str(), nullptr, true);
             const auto target = DefaultTargetForHand(a_hand);
             return ToggleRingForTarget(a_selection, target, a_origin);
         }
 
-        auto rows = BuildFingerRows(a_selection, a_hand);
+        auto labels = GetFingerSelectLabels();
+        auto rows = BuildFingerRows(a_selection, a_hand, labels);
         const auto selectedTarget = FindPreferredSelectedTargetOnHand(a_selection, a_hand)
                                         .value_or(DefaultTargetForHand(a_hand));
         const auto startIndex = GetRowIndex(rows, selectedTarget);
@@ -1790,7 +1845,7 @@ namespace {
 
         return FingerSelectMenu::Show(
             FingerSelectMenu::Data {
-                .title = kFingerSelectTitle,
+                .labels = std::move(labels),
                 .ringName = GetSourceRingLabel(a_selection),
                 .rows = std::move(rows),
                 .selectedIndex = startIndex,

@@ -71,27 +71,6 @@ inline constexpr std::array kVirtualRingTargets {
     return ToIndex(a_target) != ToIndex(kVanillaRingTarget);
 }
 
-[[nodiscard]] constexpr std::string_view HandLabel(const RingHand a_hand) {
-    switch (a_hand) {
-        case RingHand::kLeft:  return "left";
-        case RingHand::kRight: return "right";
-    }
-
-    return "unknown";
-}
-
-[[nodiscard]] constexpr std::string_view FingerLabel(const RingFinger a_finger) {
-    switch (a_finger) {
-        case RingFinger::kThumb:  return "Thumb";
-        case RingFinger::kIndex:  return "Index";
-        case RingFinger::kMiddle: return "Middle";
-        case RingFinger::kRing:   return "Ring";
-        case RingFinger::kPinky:  return "Pinky";
-    }
-
-    return "Unknown";
-}
-
 [[nodiscard]] constexpr std::string_view TargetLabel(const RingTarget a_target) {
     switch (ToIndex(a_target)) {
         case 0:  return "leftThumb";

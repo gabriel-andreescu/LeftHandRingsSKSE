@@ -201,12 +201,12 @@ namespace {
 
     [[nodiscard]] bool ApplyLabels(RE::GFxMovieView& a_movie, const Data& a_data) {
         std::array<RE::GFxValue, 6> args;
-        args[0].SetString(a_data.title.c_str());
+        args[0].SetString(a_data.labels.title.c_str());
         args[1].SetString(a_data.ringName.c_str());
-        args[2].SetString(a_data.fingerHeader.c_str());
-        args[3].SetString(a_data.equippedHeader.c_str());
-        args[4].SetString(a_data.equipLabel.c_str());
-        args[5].SetString(a_data.cancelLabel.c_str());
+        args[2].SetString(a_data.labels.fingerHeader.c_str());
+        args[3].SetString(a_data.labels.equippedHeader.c_str());
+        args[4].SetString(a_data.labels.equipAction.c_str());
+        args[5].SetString(a_data.labels.cancelAction.c_str());
 
         if (!InvokeClip(a_movie, "SetLabels", args.data(), static_cast<std::uint32_t>(args.size()))) {
             logger::warn("FingerSelectMenu: label update failed");

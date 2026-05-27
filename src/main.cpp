@@ -2,6 +2,7 @@
 #include "EventListener.h"
 #include "FirstPerson.h"
 #include "Hooks.h"
+#include "Localization.h"
 #include "Papyrus.h"
 #include "RingVisuals.h"
 #include "Serialization.h"
@@ -31,6 +32,7 @@ void MessageHandler(SKSE::MessagingInterface::Message* a_msg) {
             RingVisuals::Revert();
             break;
         case SKSE::MessagingInterface::kDataLoaded:
+            Localization::Load("LeftHandRingsSKSE");
             Settings::GetSingleton()->Load();
             FirstPerson::ApplyRaceFlags();
             Hooks::Install();

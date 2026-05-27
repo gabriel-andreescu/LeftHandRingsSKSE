@@ -67,6 +67,8 @@ set(SOURCES
         src/Hooks.h
         src/Inventory.cpp
         src/Inventory.h
+        src/Localization.cpp
+        src/Localization.h
         src/main.cpp
         src/RingEnchantments.cpp
         src/RingEnchantments.h

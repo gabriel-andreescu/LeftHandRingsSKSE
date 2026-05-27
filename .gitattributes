@@ -12,3 +12,4 @@
 *.esp  binary
 *.esm  binary
 *.pex  binary
+Skyrim/Data/Interface/Translations/*.txt text working-tree-encoding=UTF-16LE-BOM eol=CRLF
