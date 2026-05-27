@@ -11,6 +11,7 @@
 #include <RE/B/BSPCGamepadDeviceDelegate.h>
 #include <RE/B/BSPCGamepadDeviceHandler.h>
 #include <RE/B/BSWin32KeyboardDevice.h>
+#include <RE/G/GFxFunctionHandler.h>
 #include <RE/S/SendHUDMessage.h>
 #include <RE/S/SendUIMessage.h>
 
@@ -38,7 +39,14 @@ namespace {
     constexpr auto kScaleformCustomBlockReason = "lhrsCustomBlockReason";
     constexpr auto kScaleformVanillaRingSlotEquipped = "lhrsVanillaRingSlotEquipped";
     constexpr auto kScaleformInventoryBaseText = "lhrsBaseText";
+    constexpr auto kScaleformInventoryEquipHintPatched = "lhrsInventoryEquipHintPatched";
+    constexpr auto kInventoryMenuClipPath = "_root.Menu_mc";
+    constexpr auto kSkyUISelectedEntryPath = "_root.Menu_mc.inventoryLists.itemList.selectedEntry";
+    constexpr auto kSkyUIUpdateBottomBarPath = "_root.Menu_mc.updateBottomBar";
+    constexpr auto kVanillaSelectedEntryPath = "_root.Menu_mc.InventoryLists_mc.ItemsList.selectedEntry";
+    constexpr auto kVanillaUpdateBottomBarPath = "_root.Menu_mc.UpdateBottomBarButtons";
     constexpr auto kInventoryInvalidateListDataPath = "_root.Menu_mc.inventoryLists.InvalidateListData";
+    constexpr auto kSkyUIItemMenuContext = 3;
     constexpr auto kFingerSelectTitle = "ASSIGN RING";
     constexpr auto kEmptyRingLabel = "-";
 
@@ -428,6 +436,219 @@ namespace {
         };
     }
 
+    [[nodiscard]] bool IsScaleformObject(const RE::GFxValue& a_value) {
+        return a_value.IsObject() || a_value.IsDisplayObject();
+    }
+
+    [[nodiscard]] bool IsInventoryRingEquipHintRow(const RE::GFxValue& a_entryObject) {
+        if (!IsScaleformObject(a_entryObject)) {
+            return false;
+        }
+
+        const auto selection = GetScaleformRowSelection(a_entryObject);
+        if (selection.kind == Selection::Kind::kNone) {
+            return false;
+        }
+
+        const auto customFailure = static_cast<Inventory::EntryCustomFailure>(GetScaleformIntMember(
+            a_entryObject,
+            kScaleformCustomBlockReason,
+            static_cast<int>(std::to_underlying(Inventory::EntryCustomFailure::kNone))
+        ));
+        return customFailure == Inventory::EntryCustomFailure::kNone;
+    }
+
+    [[nodiscard]] std::optional<RE::GFxValue> GetInventorySelectedEntry(
+        const RE::GFxMovie& a_movie,
+        const char* a_path
+    ) {
+        RE::GFxValue selectedEntry;
+        if (!a_movie.GetVariable(std::addressof(selectedEntry), a_path) || !IsScaleformObject(selectedEntry)) {
+            return std::nullopt;
+        }
+
+        return selectedEntry;
+    }
+
+    [[nodiscard]] bool IsSelectedInventoryRingEquipHintRow(const RE::GFxMovie& a_movie, const char* a_path) {
+        const auto selectedEntry = GetInventorySelectedEntry(a_movie, a_path);
+        return selectedEntry && IsInventoryRingEquipHintRow(*selectedEntry);
+    }
+
+    void SetSkyUIEquipControl(RE::GFxMovie& a_movie, RE::GFxValue& a_control, const char* a_name) {
+        a_movie.CreateObject(std::addressof(a_control));
+
+        RE::GFxValue name;
+        name.SetString(a_name);
+        a_control.SetMember("name", name);
+        a_control.SetMember("context", kSkyUIItemMenuContext);
+    }
+
+    void SetSkyUIRingEquipButtonData(RE::GFxMovie& a_movie, RE::GFxValue& a_result) {
+        a_movie.CreateObject(std::addressof(a_result));
+
+        RE::GFxValue text;
+        text.SetString("$Equip");
+        a_result.SetMember("text", text);
+
+        RE::GFxValue controls;
+        a_movie.CreateArray(std::addressof(controls));
+
+        RE::GFxValue rightEquip;
+        SetSkyUIEquipControl(a_movie, rightEquip, "RightEquip");
+        controls.SetElement(0, rightEquip);
+
+        RE::GFxValue leftEquip;
+        SetSkyUIEquipControl(a_movie, leftEquip, "LeftEquip");
+        controls.SetElement(1, leftEquip);
+
+        a_result.SetMember("controls", controls);
+    }
+
+    void SetVanillaRingEquipButtonArt(RE::GFxValue& a_inventoryMenu) {
+        RE::GFxValue bottomBar;
+        if (!a_inventoryMenu.GetMember("BottomBar_mc", std::addressof(bottomBar)) || !IsScaleformObject(bottomBar)) {
+            return;
+        }
+
+        RE::GFxValue equipButtonArt;
+        if (!a_inventoryMenu.GetMember("EquipButtonArt", std::addressof(equipButtonArt))
+            || !equipButtonArt.IsObject()) {
+            return;
+        }
+
+        std::array<RE::GFxValue, 2> args;
+        args[0] = equipButtonArt;
+        args[1].SetNumber(0.0);
+        static_cast<void>(bottomBar.Invoke("SetButtonArt", args));
+    }
+
+    class SkyUIEquipButtonDataHandler final : public RE::GFxFunctionHandler {
+    public:
+        explicit SkyUIEquipButtonDataHandler(const RE::GFxValue& a_originalFunction)
+            : originalFunction_(a_originalFunction) {}
+
+        void Call(Params& a_params) override {
+            if (IsSelectedInventoryRingEquipHintRow(*a_params.movie, kSkyUISelectedEntryPath)) {
+                SetSkyUIRingEquipButtonData(*a_params.movie, *a_params.retVal);
+                return;
+            }
+
+            originalFunction_.Invoke(
+                "call",
+                a_params.retVal,
+                a_params.argsWithThisRef,
+                static_cast<std::size_t>(a_params.argCount) + 1
+            );
+        }
+
+    private:
+        RE::GFxValue originalFunction_;
+    };
+
+    class VanillaBottomBarUpdateHandler final : public RE::GFxFunctionHandler {
+    public:
+        explicit VanillaBottomBarUpdateHandler(const RE::GFxValue& a_originalFunction)
+            : originalFunction_(a_originalFunction) {}
+
+        void Call(Params& a_params) override {
+            originalFunction_.Invoke(
+                "call",
+                a_params.retVal,
+                a_params.argsWithThisRef,
+                static_cast<std::size_t>(a_params.argCount) + 1
+            );
+
+            if (IsSelectedInventoryRingEquipHintRow(*a_params.movie, kVanillaSelectedEntryPath)) {
+                SetVanillaRingEquipButtonArt(*a_params.thisPtr);
+            }
+        }
+
+    private:
+        RE::GFxValue originalFunction_;
+    };
+
+    [[nodiscard]] bool InstallSkyUIInventoryEquipButtonHint(RE::GFxMovie& a_movie, RE::GFxValue& a_inventoryMenu) {
+        if (!a_movie.IsAvailable(kSkyUIUpdateBottomBarPath)) {
+            return false;
+        }
+
+        RE::GFxValue originalFunction;
+        if (!a_inventoryMenu.GetMember("getEquipButtonData", std::addressof(originalFunction))
+            || !originalFunction.IsObject()) {
+            return false;
+        }
+
+        auto handler = RE::make_gptr<SkyUIEquipButtonDataHandler>(originalFunction);
+        RE::GFxValue function;
+        a_movie.CreateFunction(std::addressof(function), handler.get());
+        return a_inventoryMenu.SetMember("getEquipButtonData", function);
+    }
+
+    [[nodiscard]] bool InstallVanillaInventoryEquipButtonHint(RE::GFxMovie& a_movie, RE::GFxValue& a_inventoryMenu) {
+        if (!a_movie.IsAvailable(kVanillaUpdateBottomBarPath)) {
+            return false;
+        }
+
+        RE::GFxValue originalFunction;
+        if (!a_inventoryMenu.GetMember("UpdateBottomBarButtons", std::addressof(originalFunction))
+            || !originalFunction.IsObject()) {
+            return false;
+        }
+
+        auto handler = RE::make_gptr<VanillaBottomBarUpdateHandler>(originalFunction);
+        RE::GFxValue function;
+        a_movie.CreateFunction(std::addressof(function), handler.get());
+        return a_inventoryMenu.SetMember("UpdateBottomBarButtons", function);
+    }
+
+    [[nodiscard]] bool InstallInventoryEquipButtonHint(RE::InventoryMenu& a_inventoryMenu) {
+        auto* movie = a_inventoryMenu.uiMovie.get();
+        if (!movie) {
+            return false;
+        }
+
+        RE::GFxValue inventoryMenu;
+        if (!movie->GetVariable(std::addressof(inventoryMenu), kInventoryMenuClipPath)
+            || !IsScaleformObject(inventoryMenu)) {
+            return false;
+        }
+
+        if (GetScaleformBoolMember(inventoryMenu, kScaleformInventoryEquipHintPatched).value_or(false)) {
+            return false;
+        }
+
+        const auto installed = InstallSkyUIInventoryEquipButtonHint(*movie, inventoryMenu)
+                               || InstallVanillaInventoryEquipButtonHint(*movie, inventoryMenu);
+        if (!installed) {
+            return false;
+        }
+
+        inventoryMenu.SetMember(kScaleformInventoryEquipHintPatched, true);
+        return true;
+    }
+
+    void RefreshInventoryEquipButtonHint(RE::InventoryMenu& a_inventoryMenu) {
+        auto* movie = a_inventoryMenu.uiMovie.get();
+        if (!movie) {
+            return;
+        }
+
+        if (movie->IsAvailable(kSkyUIUpdateBottomBarPath)) {
+            std::array<RE::GFxValue, 1> args;
+            args[0].SetBoolean(GetInventorySelectedEntry(*movie, kSkyUISelectedEntryPath).has_value());
+            static_cast<void>(
+                movie->Invoke(kSkyUIUpdateBottomBarPath, nullptr, args.data(), static_cast<std::uint32_t>(args.size()))
+            );
+            return;
+        }
+
+        if (movie->IsAvailable(kVanillaUpdateBottomBarPath)
+            && GetInventorySelectedEntry(*movie, kVanillaSelectedEntryPath).has_value()) {
+            static_cast<void>(movie->Invoke(kVanillaUpdateBottomBarPath, nullptr, nullptr, 0));
+        }
+    }
+
     void StampScaleformSelection(
         RE::GFxValue& a_object,
         const Selection::Kind a_kind,
@@ -667,6 +888,7 @@ namespace {
             return;
         }
 
+        const auto equipHintInstalled = InstallInventoryEquipButtonHint(*inventoryMenu);
         std::uint32_t changedEntryRows = 0;
         for (std::uint32_t index = 0; index < itemList->entryList.GetArraySize(); ++index) {
             RE::GFxValue entryObject;
@@ -690,6 +912,10 @@ namespace {
 
         if (changedEntryRows > 0) {
             InvalidateInventoryListData(*inventoryMenu);
+        }
+
+        if (equipHintInstalled) {
+            RefreshInventoryEquipButtonHint(*inventoryMenu);
         }
     }
 
