@@ -1,8 +1,9 @@
 # Changelog
 
-## 0.3.1 - Unreleased
+## 0.3.1 - 2026-05-28
 
 - fix: center the finger selector in wider inventory menus such as Dear Diary
+- fix: remove inactive virtual ring enchantment effects when unequipping
 - fix: prevent crashes when attaching virtual ring visuals
 - fix: prevent quest-locked rings from being unequipped from the vanilla right index finger
 

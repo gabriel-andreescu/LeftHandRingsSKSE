@@ -42,43 +42,6 @@ namespace {
         };
     }
 
-    [[nodiscard]] bool IsLiveRingEffect(const RE::ActiveEffect* a_effect, const RE::TESObjectARMO* a_source) {
-        return a_effect
-               && a_effect->source
-               == a_source
-               && a_effect->flags.none(RE::ActiveEffect::Flag::kInactive, RE::ActiveEffect::Flag::kDispelled);
-    }
-
-    [[nodiscard]] std::vector<RE::ActiveEffect*> CollectLiveEffects(
-        RE::Actor& a_actor,
-        const RE::TESObjectARMO* a_source
-    ) {
-        auto* magicTarget = a_actor.AsMagicTarget();
-        if (!magicTarget) {
-            return {};
-        }
-
-        auto* activeEffects = magicTarget->GetActiveEffectList();
-        if (!activeEffects) {
-            return {};
-        }
-
-        std::vector<RE::ActiveEffect*> effects;
-        for (auto* activeEffect : *activeEffects) {
-            if (IsLiveRingEffect(activeEffect, a_source)) {
-                effects.push_back(activeEffect);
-            }
-        }
-
-        return effects;
-    }
-
-    void DispelEffects(const std::vector<RE::ActiveEffect*>& a_effects) {
-        for (auto* effect : a_effects) {
-            effect->Dispel(true);
-        }
-    }
-
     [[nodiscard]] RE::EnchantmentItem* ResolveEnchantment(
         const RE::TESObjectARMO& a_source,
         const RE::ExtraDataList* a_extraList
@@ -160,7 +123,30 @@ float GetScale(RE::Actor& a_actor, const RE::TESObjectARMO* a_source) {
 }
 
 void DispelEffectsFromSource(RE::Actor& a_actor, const RE::TESObjectARMO& a_source) {
-    DispelEffects(CollectLiveEffects(a_actor, &a_source));
+    auto* magicTarget = a_actor.AsMagicTarget();
+    if (!magicTarget) {
+        return;
+    }
+
+    auto* activeEffects = magicTarget->GetActiveEffectList();
+    if (!activeEffects) {
+        return;
+    }
+
+    std::vector<RE::ActiveEffect*> effects;
+    for (auto* activeEffect : *activeEffects) {
+        if (!activeEffect || activeEffect->flags.any(RE::ActiveEffect::Flag::kDispelled)) {
+            continue;
+        }
+
+        if (activeEffect->source == &a_source) {
+            effects.push_back(activeEffect);
+        }
+    }
+
+    for (auto* effect : effects) {
+        effect->Dispel(true);
+    }
 }
 
 void ApplyVirtualRingEnchantment(
@@ -200,7 +186,7 @@ void RefreshVanillaRingSlotEffects(RE::Actor& a_actor) {
         return;
     }
 
-    DispelEffects(CollectLiveEffects(a_actor, vanillaSlot.ring));
+    DispelEffectsFromSource(a_actor, *vanillaSlot.ring);
     a_actor.UpdateArmorAbility(vanillaSlot.ring, vanillaSlot.extraList);
 }
 }
