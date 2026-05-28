@@ -312,9 +312,7 @@ namespace {
         if (IsInVanillaRingSlot(*player, *ring, a_customKey, a_customIdentity)) {
             RingSounds::Play(*player, *ring, RingSounds::Event::kEquip);
         }
-        stl::add_ui_task([] {
-            UI::RefreshInventoryMenuAfterVanillaRingSlotMove();
-        });
+        UI::QueueInventoryMenuRefreshAfterVanillaRingSlotMove();
     }
 
     [[nodiscard]] bool UnequipVanillaRingSlot(

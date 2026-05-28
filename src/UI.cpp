@@ -1164,6 +1164,9 @@ namespace {
         if (!itemList) {
             return;
         }
+        if (!itemList->root.IsObject() && !itemList->root.IsDisplayObject()) {
+            return;
+        }
 
         static_cast<void>(itemList->root.SetMember("selectedIndex", RE::GFxValue {-1.0}));
     }
@@ -1338,13 +1341,9 @@ namespace {
         const SelectionOrigin a_origin
     ) {
         if (a_origin == SelectionOrigin::kInventoryMenu) {
-            if (auto* inventoryMenu = GetInventoryMenu()) {
-                DeselectInventoryItem(*inventoryMenu);
-            }
-
             const auto result = Selection::MoveVanillaRingSlotFormToVirtual(a_ring.GetFormID(), a_target);
             if (result.inventoryChanged) {
-                RefreshInventoryMenuAfterVanillaRingSlotMove();
+                QueueInventoryMenuRefreshAfterVanillaRingSlotMove();
             } else if (result.selectionChanged) {
                 RefreshRingRows();
             }
@@ -1364,10 +1363,6 @@ namespace {
         const SelectionOrigin a_origin
     ) {
         if (a_origin == SelectionOrigin::kInventoryMenu) {
-            if (auto* inventoryMenu = GetInventoryMenu()) {
-                DeselectInventoryItem(*inventoryMenu);
-            }
-
             const auto result = Selection::MoveVanillaRingSlotCustomToVirtual(
                 a_ring.GetFormID(),
                 a_customKey,
@@ -1375,7 +1370,7 @@ namespace {
                 a_target
             );
             if (result.inventoryChanged) {
-                RefreshInventoryMenuAfterVanillaRingSlotMove();
+                QueueInventoryMenuRefreshAfterVanillaRingSlotMove();
             } else if (result.selectionChanged) {
                 RefreshRingRows();
             }
@@ -1499,7 +1494,7 @@ namespace {
         }
 
         if (a_origin == SelectionOrigin::kInventoryMenu && result.inventoryChanged) {
-            RefreshInventoryMenuAfterVanillaRingSlotMove();
+            QueueInventoryMenuRefreshAfterVanillaRingSlotMove();
             return RingToggleResult::kHandled;
         }
 
@@ -2035,6 +2030,23 @@ namespace {
         }
     };
 
+    void RefreshInventoryMenuAfterVanillaRingSlotMoveOnUIThread() {
+        auto* inventoryMenu = GetInventoryMenu();
+        if (!inventoryMenu) {
+            return;
+        }
+
+        DeselectInventoryItem(*inventoryMenu);
+        if (auto* itemList = inventoryMenu->GetRuntimeData().itemList) {
+            if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                itemList->Update(player);
+            }
+        }
+        DeselectInventoryItem(*inventoryMenu);
+        InvalidateInventoryListData(*inventoryMenu);
+        RefreshFavoritesRows();
+    }
+
 }
 
 void InstallMenuEventSink() {
@@ -2102,21 +2114,10 @@ void RefreshFavoritesRows() {
     });
 }
 
-void RefreshInventoryMenuAfterVanillaRingSlotMove() {
-    auto* inventoryMenu = GetInventoryMenu();
-    if (!inventoryMenu) {
-        return;
-    }
-
-    DeselectInventoryItem(*inventoryMenu);
-    if (auto* itemList = inventoryMenu->GetRuntimeData().itemList) {
-        if (auto* player = RE::PlayerCharacter::GetSingleton()) {
-            itemList->Update(player);
-        }
-    }
-    DeselectInventoryItem(*inventoryMenu);
-    InvalidateInventoryListData(*inventoryMenu);
-    RefreshFavoritesRows();
+void QueueInventoryMenuRefreshAfterVanillaRingSlotMove() {
+    stl::add_ui_task([] {
+        RefreshInventoryMenuAfterVanillaRingSlotMoveOnUIThread();
+    });
 }
 
 void RefreshItemRowsForRing(RE::Actor& a_actor, const RE::TESObjectARMO* a_ring) {
