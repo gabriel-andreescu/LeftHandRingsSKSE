@@ -4,8 +4,13 @@
 #include "RingTargets.h"
 #include "VirtualRings.h"
 
+#include <RE/M/MemoryManager.h>
+
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -28,6 +33,23 @@ namespace {
         bool foundSkin {false};
         bool retargetedSkin {false};
     };
+
+    [[nodiscard]] std::size_t NiNodeAllocationSize() {
+        return REL::Module::IsVR() ? 0x150 : 0x128;
+    }
+
+    [[nodiscard]] RE::NiNode* CreateVisualNode(const std::uint16_t a_arrBufLen = 0) {
+        auto* node = RE::malloc<RE::NiNode>(NiNodeAllocationSize());
+        if (!node) {
+            return nullptr;
+        }
+
+        std::memset(node, 0, NiNodeAllocationSize());
+
+        using NiNodeCtor_t = RE::NiNode* (*)(RE::NiNode*, std::uint16_t);
+        static REL::Relocation<NiNodeCtor_t> ctor {RELOCATION_ID(68936, 70287)};
+        return ctor(node, a_arrBufLen);
+    }
 
     [[nodiscard]] RE::SEX OppositeSex(const RE::SEX a_sex) {
         return a_sex == RE::SEXES::kFemale ? RE::SEXES::kMale : RE::SEXES::kFemale;
@@ -344,7 +366,7 @@ namespace {
         const bool a_firstPerson,
         const VirtualRings::VisualEntry& a_entry
     ) {
-        RE::NiPointer<RE::NiNode> targetNode {RE::NiNode::Create()};
+        RE::NiPointer<RE::NiNode> targetNode {CreateVisualNode()};
         if (!targetNode) {
             return nullptr;
         }
@@ -388,7 +410,7 @@ namespace {
             return;
         }
 
-        RE::NiPointer<RE::NiNode> root {RE::NiNode::Create()};
+        RE::NiPointer<RE::NiNode> root {CreateVisualNode()};
         if (!root) {
             return;
         }

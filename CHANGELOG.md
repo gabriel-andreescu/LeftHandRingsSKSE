@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 - Unreleased
+
+- fix: prevent crashes when attaching virtual ring visuals
+
 ## 0.3.0 - 2026-05-28
 
 - feat: add translation support for UI text
