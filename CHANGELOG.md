@@ -4,6 +4,7 @@
 
 - fix: center the finger selector in wider inventory menus such as Dear Diary
 - fix: prevent crashes when attaching virtual ring visuals
+- fix: prevent quest-locked rings from being unequipped from the vanilla right index finger
 
 ## 0.3.0 - 2026-05-28
 

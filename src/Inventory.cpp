@@ -1,5 +1,7 @@
 #include "Inventory.h"
 
+#include <RE/E/ExtraCannotWear.h>
+
 #include <algorithm>
 #include <utility>
 
@@ -228,8 +230,41 @@ bool MatchesCustomSelection(
     return !a_identity || MatchesExtraListIdentity(a_extraList, *a_identity);
 }
 
+bool IsProtectedRingStack(RE::ExtraDataList* a_extraList) {
+    if (!a_extraList) {
+        return false;
+    }
+
+    if (a_extraList->HasQuestObjectAlias()) {
+        return true;
+    }
+
+    return a_extraList->HasType<RE::ExtraCannotWear>();
+}
+
 bool IsRightWorn(const RE::ExtraDataList* a_extraList) {
     return a_extraList && a_extraList->HasType<RE::ExtraWorn>();
+}
+
+bool HasProtectedRightWornRing(RE::Actor& a_actor) {
+    auto* inventoryChanges = a_actor.GetInventoryChanges();
+    if (!inventoryChanges || !inventoryChanges->entryList) {
+        return false;
+    }
+
+    for (auto* entry : *inventoryChanges->entryList) {
+        if (!entry || !AsRing(entry->object) || !entry->extraLists) {
+            continue;
+        }
+
+        for (auto* extraList : *entry->extraLists) {
+            if (IsRightWorn(extraList) && IsProtectedRingStack(extraList)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 std::optional<CustomEnchantmentData> ReadCustomEnchantment(const RE::ExtraDataList& a_extraList) {
@@ -313,6 +348,7 @@ CustomMatchState FindCustomMatches(
         if (IsRightWorn(extraList)) {
             state.rightWornExtraList = extraList;
             state.firstExtraList = extraList;
+            state.rightWornProtected = IsProtectedRingStack(extraList);
         }
     }
 
@@ -338,6 +374,7 @@ FormOnlyMatchState FindFormOnlyMatches(RE::Actor& a_actor, const RE::TESObjectAR
     FormOnlyMatchState state {
         .rightWornExtraList = rightWornExtraList,
         .count = formOnlyCount,
+        .rightWornProtected = IsProtectedRingStack(rightWornExtraList),
         .rightWorn = rightWornExtraList != nullptr || (entry && !entry->extraLists && entry->IsWorn(false)),
     };
 
@@ -411,6 +448,7 @@ SourceRingState GetSourceState(RE::Actor& a_actor, const RE::TESObjectARMO& a_ri
         .entry = entry,
         .rightWornExtraList = rightWornExtraList,
         .count = Inventory::GetCount(a_actor, a_ring),
+        .rightWornProtected = IsProtectedRingStack(rightWornExtraList),
         .rightWorn = rightWorn,
         .rightWornEnchanted = rightWorn
                               && (a_ring.formEnchanting || Inventory::HasCustomEnchantment(rightWornExtraList)),
@@ -421,6 +459,10 @@ bool UnequipRightWornSource(RE::Actor& a_actor, RE::TESObjectARMO& a_ring) {
     const auto state = GetSourceState(a_actor, a_ring);
     if (!state.rightWorn) {
         return true;
+    }
+
+    if (state.rightWornProtected) {
+        return false;
     }
 
     if (!state.rightWornExtraList) {

@@ -45,6 +45,7 @@ struct CustomMatchState {
     RE::ExtraDataList* firstExtraList {nullptr};
     RE::ExtraDataList* rightWornExtraList {nullptr};
     std::int32_t count {0};
+    bool rightWornProtected {false};
 
     [[nodiscard]] bool HasMatch() const;
     [[nodiscard]] bool CanWearSameKeyInBothHands() const;
@@ -53,6 +54,7 @@ struct CustomMatchState {
 struct FormOnlyMatchState {
     RE::ExtraDataList* rightWornExtraList {nullptr};
     std::int32_t count {0};
+    bool rightWornProtected {false};
     bool rightWorn {false};
 
     [[nodiscard]] bool HasMatch() const;
@@ -63,6 +65,7 @@ struct SourceRingState {
     RE::InventoryEntryData* entry {nullptr};
     RE::ExtraDataList* rightWornExtraList {nullptr};
     std::int32_t count {0};
+    bool rightWornProtected {false};
     bool rightWorn {false};
     bool rightWornEnchanted {false};
 
@@ -88,7 +91,9 @@ struct SourceRingState {
     const CustomEnchantmentKey& a_key,
     const std::optional<ExtraListIdentity>& a_identity
 );
+[[nodiscard]] bool IsProtectedRingStack(RE::ExtraDataList* a_extraList);
 [[nodiscard]] bool IsRightWorn(const RE::ExtraDataList* a_extraList);
+[[nodiscard]] bool HasProtectedRightWornRing(RE::Actor& a_actor);
 [[nodiscard]] std::optional<CustomEnchantmentData> ReadCustomEnchantment(const RE::ExtraDataList& a_extraList);
 [[nodiscard]] bool MirrorCustomEnchantment(RE::ExtraDataList& a_target, const RE::ExtraDataList& a_source);
 [[nodiscard]] RE::InventoryEntryData* FindEntry(RE::Actor& a_actor, const RE::TESBoundObject& a_object);

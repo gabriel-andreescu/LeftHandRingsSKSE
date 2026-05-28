@@ -70,6 +70,7 @@ namespace {
     constexpr auto kFingerRingKey = "$LHRS_Finger_Ring";
     constexpr auto kFingerPinkyKey = "$LHRS_Finger_Pinky";
     constexpr auto kMultiFingerRingMessageKey = "$LHRS_Message_MultiFingerRing";
+    constexpr auto kRingUnequipBlockedMessageKey = "$LHRS_Message_RingUnequipBlocked";
     constexpr auto kEmptyRingLabel = "-";
 
     struct RowSelection {
@@ -127,6 +128,31 @@ namespace {
         }
 
         return "Unknown";
+    }
+
+    void ShowRingUnequipBlockedMessage() {
+        const auto message = Localization::Translate(kRingUnequipBlockedMessageKey, "This ring cannot be unequipped.");
+        RE::SendHUDMessage::ShowHUDMessage(message.c_str(), nullptr, true);
+    }
+
+    [[nodiscard]] bool IsRightWornRingProtected(RE::PlayerCharacter& a_player, const RingSelectionData& a_selection) {
+        auto* ring = a_selection.ring;
+        if (!ring) {
+            return false;
+        }
+
+        if (a_selection.customKey) {
+            const auto sourceMatches = Inventory::FindSourceMatches(
+                a_player,
+                *ring,
+                *a_selection.customKey,
+                a_selection.customIdentity
+            );
+            return sourceMatches.rightWornExtraList && sourceMatches.rightWornProtected;
+        }
+
+        const auto sourceMatches = Inventory::FindFormOnlyMatches(a_player, *ring);
+        return sourceMatches.rightWorn && sourceMatches.rightWornProtected;
     }
 
     [[nodiscard]] std::string GetInventoryHandLabel(const RingHand a_hand) {
@@ -1390,6 +1416,11 @@ namespace {
 
         const auto selectedCopies = CountSelectedVirtualCopies(a_selection, a_target);
         if (sourceMatches.rightWornExtraList && std::cmp_less_equal(sourceMatches.count, selectedCopies + 1)) {
+            if (sourceMatches.rightWornProtected) {
+                ShowRingUnequipBlockedMessage();
+                return RingToggleResult::kHandled;
+            }
+
             return MoveVanillaRingSlotCustomToVirtual(
                 a_target,
                 a_ring,
@@ -1422,6 +1453,11 @@ namespace {
 
         const auto selectedCopies = CountSelectedVirtualCopies(a_selection, a_target);
         if (sourceMatches.rightWorn && std::cmp_less_equal(sourceMatches.count, selectedCopies + 1)) {
+            if (sourceMatches.rightWornProtected) {
+                ShowRingUnequipBlockedMessage();
+                return RingToggleResult::kHandled;
+            }
+
             return MoveVanillaRingSlotFormToVirtual(a_target, a_ring, a_origin);
         }
 
@@ -1442,6 +1478,16 @@ namespace {
             return RingToggleResult::kFailed;
         }
 
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) {
+            return RingToggleResult::kFailed;
+        }
+
+        if (Inventory::HasProtectedRightWornRing(*player)) {
+            ShowRingUnequipBlockedMessage();
+            return RingToggleResult::kHandled;
+        }
+
         const auto result = a_selection.customKey ? Selection::ToggleVanillaRingSlotCustom(
                                                         ring->GetFormID(),
                                                         *a_selection.customKey,
@@ -1458,9 +1504,7 @@ namespace {
         }
 
         if (result.inventoryChanged) {
-            if (auto* player = RE::PlayerCharacter::GetSingleton()) {
-                RefreshItemRowsForRing(*player, ring);
-            }
+            RefreshItemRowsForRing(*player, ring);
             return RingToggleResult::kHandled;
         }
 
@@ -1820,6 +1864,13 @@ namespace {
         auto* ring = a_selection.ring;
         if (!ring) {
             return false;
+        }
+
+        if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+            if (IsRightWornRingProtected(*player, a_selection)) {
+                ShowRingUnequipBlockedMessage();
+                return true;
+            }
         }
 
         if (RingFootprints::GetSourceRingFootprint(*ring).IsMultiFinger()) {

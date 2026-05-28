@@ -14,3 +14,4 @@ $LHRS_Finger_Middle	Middle
 $LHRS_Finger_Ring	Ring
 $LHRS_Finger_Pinky	Pinky
 $LHRS_Message_MultiFingerRing	This ring occupies multiple fingers.
+$LHRS_Message_RingUnequipBlocked	This ring cannot be unequipped.

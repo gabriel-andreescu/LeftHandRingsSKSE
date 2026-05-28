@@ -322,6 +322,10 @@ namespace {
         RE::TESObjectARMO& a_ring,
         RE::ExtraDataList* a_extraList
     ) {
+        if (Inventory::IsProtectedRingStack(a_extraList)) {
+            return false;
+        }
+
         auto* equipManager = RE::ActorEquipManager::GetSingleton();
         if (!equipManager) {
             return false;
@@ -384,6 +388,7 @@ namespace {
         RE::ExtraDataList* rightWornExtraList = nullptr;
         RE::ExtraDataList* equipExtraList = nullptr;
         auto rightWorn = false;
+        auto rightWornProtected = false;
         if (a_customKey) {
             const auto sourceMatches = Inventory::FindSourceMatches(*player, *ring, *a_customKey, a_customIdentity);
             if (!sourceMatches.HasMatch()) {
@@ -393,6 +398,7 @@ namespace {
             rightWornExtraList = sourceMatches.rightWornExtraList;
             equipExtraList = sourceMatches.firstExtraList;
             rightWorn = rightWornExtraList != nullptr;
+            rightWornProtected = sourceMatches.rightWornProtected;
         } else {
             const auto sourceMatches = Inventory::FindFormOnlyMatches(*player, *ring);
             if (!sourceMatches.HasMatch()) {
@@ -401,9 +407,14 @@ namespace {
 
             rightWornExtraList = sourceMatches.rightWornExtraList;
             rightWorn = sourceMatches.rightWorn;
+            rightWornProtected = sourceMatches.rightWornProtected;
         }
 
         if (rightWorn) {
+            if (rightWornProtected) {
+                return result;
+            }
+
             if (!UnequipVanillaRingSlot(*player, *ring, rightWornExtraList)) {
                 return result;
             }
@@ -781,6 +792,10 @@ RingActionResult MoveVanillaRingSlotCustomToVirtual(
 
     const auto selectedCopies = CountMatchingSelections(a_sourceFormID, a_customKey, a_customIdentity, a_target);
     if (sourceMatches.rightWornExtraList && std::cmp_less_equal(sourceMatches.count, selectedCopies + 1)) {
+        if (sourceMatches.rightWornProtected) {
+            return result;
+        }
+
         auto* equipManager = RE::ActorEquipManager::GetSingleton();
         if (!equipManager) {
             return result;
