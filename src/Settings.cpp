@@ -117,14 +117,14 @@ Settings::ReloadResult Settings::Reload() {
             rawEnchantmentStrengthMode,
             kSettingsSection,
             kEnchantmentStrengthModeKey,
-            "; Ring enchantment strength mode.\n; Full keeps normal strength. Fixed uses the chosen strength. Split divides 100% evenly between equipped enchanted rings.\n; Applies to all equipped enchanted rings, including the vanilla right-hand index finger, when more than one enchanted ring is equipped.\n; 0 = Full strength, 1 = Fixed strength, 2 = Split strength.\n; Default: 0"
+            "; Ring enchantment strength mode.\n; Full keeps normal strength. Fixed uses the chosen strength. Split divides 100% evenly between counted rings.\n; Only equipped rings with at least one non-zero-magnitude enchantment effect are counted, including the vanilla right-hand index finger.\n; 0 = Full strength, 1 = Fixed strength, 2 = Split strength.\n; Default: 0"
         );
         GetValue(
             a_ini,
             rawFixedStrength,
             kSettingsSection,
             kFixedEnchantmentStrengthKey,
-            "; Fixed ring enchantment strength.\n; Applies only when enchantment strength mode is Fixed strength and more than one enchanted ring is equipped.\n; Each enchanted ring uses this strength, including the vanilla right-hand index finger.\n; Valid range: 5-100.\n; Default: 50"
+            "; Fixed ring enchantment strength.\n; Used by Fixed strength mode. Only equipped rings with at least one non-zero-magnitude enchantment effect are counted, including the vanilla right-hand index finger.\n; Valid range: 5-100.\n; Default: 50"
         );
         GetValue(
             a_ini,

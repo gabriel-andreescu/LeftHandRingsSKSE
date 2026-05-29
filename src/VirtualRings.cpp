@@ -235,12 +235,12 @@ namespace {
         return handlePolicy->GetHandleForObject(a_form.GetFormType(), std::addressof(a_form));
     }
 
-    [[nodiscard]] bool HasActiveEnchantment(const TargetState& a_state) {
+    [[nodiscard]] bool CountsForEnchantmentStrength(const TargetState& a_state) {
         const auto functional = a_state.mode == ExtraRingMode::kFunctional;
         return a_state.active
                && functional
                && a_state.effectSource
-               && (a_state.effectSource->formEnchanting || Inventory::HasCustomEnchantment(a_state.extraList.get()));
+               && RingEnchantments::HasMagnitudeEnchantment(*a_state.effectSource, a_state.extraList.get());
     }
 
     void DispatchVirtualEquipped(
@@ -788,7 +788,7 @@ bool IsEnchantedVirtualRingEffectSource(const RE::TESObjectARMO* a_armor) {
     std::scoped_lock lock(g_lock);
     return std::ranges::any_of(kVirtualRingTargets, [a_armor](const auto target) {
         const auto& state = TargetStates()[ToIndex(target)];
-        return HasActiveEnchantment(state) && state.effectSource == a_armor;
+        return CountsForEnchantmentStrength(state) && state.effectSource == a_armor;
     });
 }
 
@@ -796,7 +796,7 @@ std::uint32_t CountEnchantedVirtualRings() {
     std::scoped_lock lock(g_lock);
     auto count = std::uint32_t {0};
     for (const auto target : kVirtualRingTargets) {
-        if (HasActiveEnchantment(TargetStates()[ToIndex(target)])) {
+        if (CountsForEnchantmentStrength(TargetStates()[ToIndex(target)])) {
             ++count;
         }
     }

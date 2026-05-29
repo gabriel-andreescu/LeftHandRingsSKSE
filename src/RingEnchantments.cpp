@@ -16,7 +16,7 @@ namespace {
     struct VanillaRingSlotState {
         RE::TESObjectARMO* ring {nullptr};
         RE::ExtraDataList* extraList {nullptr};
-        bool enchanted {false};
+        bool hasMagnitudeEnchantment {false};
     };
 
     [[nodiscard]] RE::TESObjectARMO* GetVanillaRingSlotArmor(RE::Actor& a_actor) {
@@ -38,7 +38,7 @@ namespace {
         return VanillaRingSlotState {
             .ring = ring,
             .extraList = state.rightWornExtraList,
-            .enchanted = state.HasRightWornEnchantment(),
+            .hasMagnitudeEnchantment = HasMagnitudeEnchantment(*ring, state.rightWornExtraList),
         };
     }
 
@@ -56,6 +56,12 @@ namespace {
 
         const auto customData = Inventory::ReadCustomEnchantment(*a_extraList);
         return customData ? customData->enchantment : nullptr;
+    }
+
+    [[nodiscard]] bool HasNonZeroMagnitudeEffect(const RE::EnchantmentItem& a_enchantment) {
+        return std::ranges::any_of(a_enchantment.effects, [](const auto* a_effect) {
+            return a_effect && a_effect->effectItem.magnitude != 0.0F;
+        });
     }
 
     class MarkEnchantmentEffect final : public RE::MagicTarget::IPostCreationModification {
@@ -88,17 +94,17 @@ namespace {
         static_cast<void>(a_target.AddTarget(data));
     }
 
-    [[nodiscard]] std::uint32_t CountEquippedEnchantedRings(RE::Actor& a_actor) {
+    [[nodiscard]] std::uint32_t CountEquippedMagnitudeEnchantments(RE::Actor& a_actor) {
         auto count = VirtualRings::CountEnchantedVirtualRings();
         const auto vanillaSlot = GetVanillaRingSlotState(a_actor);
-        if (vanillaSlot.enchanted) {
+        if (vanillaSlot.hasMagnitudeEnchantment) {
             ++count;
         }
 
         return count;
     }
 
-    [[nodiscard]] bool SourceIsCountedEnchantedRing(RE::Actor& a_actor, const RE::TESObjectARMO* a_source) {
+    [[nodiscard]] bool SourceHasCountedMagnitudeEnchantment(RE::Actor& a_actor, const RE::TESObjectARMO* a_source) {
         if (!a_source) {
             return false;
         }
@@ -108,16 +114,21 @@ namespace {
         }
 
         const auto vanillaSlot = GetVanillaRingSlotState(a_actor);
-        return vanillaSlot.enchanted && vanillaSlot.ring == a_source;
+        return vanillaSlot.hasMagnitudeEnchantment && vanillaSlot.ring == a_source;
     }
 }
 
+bool HasMagnitudeEnchantment(const RE::TESObjectARMO& a_source, const RE::ExtraDataList* a_extraList) {
+    auto* enchantment = ResolveEnchantment(a_source, a_extraList);
+    return enchantment && HasNonZeroMagnitudeEffect(*enchantment);
+}
+
 float GetScale(RE::Actor& a_actor, const RE::TESObjectARMO* a_source) {
-    if (!SourceIsCountedEnchantedRing(a_actor, a_source)) {
+    if (!SourceHasCountedMagnitudeEnchantment(a_actor, a_source)) {
         return 1.0F;
     }
 
-    const auto count = CountEquippedEnchantedRings(a_actor);
+    const auto count = CountEquippedMagnitudeEnchantments(a_actor);
     const auto scale = Settings::GetSingleton()->GetRingEnchantmentScale(count);
     return std::clamp(scale, 0.0F, 1.0F);
 }
@@ -182,7 +193,7 @@ void ApplyVirtualRingEnchantment(
 
 void RefreshVanillaRingSlotEffects(RE::Actor& a_actor) {
     const auto vanillaSlot = GetVanillaRingSlotState(a_actor);
-    if (!vanillaSlot.enchanted || !vanillaSlot.ring) {
+    if (!vanillaSlot.hasMagnitudeEnchantment || !vanillaSlot.ring) {
         return;
     }
 
