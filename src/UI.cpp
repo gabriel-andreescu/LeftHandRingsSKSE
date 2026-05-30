@@ -1239,9 +1239,30 @@ namespace {
         }
     }
 
-    void QueueInventoryRefresh() {
+    void QueueInventoryMenuOpenRefresh() {
         stl::add_ui_task([] {
             RestampInventoryRowsFromLiveState();
+        });
+    }
+
+    void QueueInventoryRefresh() {
+        stl::add_ui_task([] {
+            auto* inventoryMenu = GetInventoryMenu();
+            if (!inventoryMenu) {
+                return;
+            }
+
+            auto* itemList = inventoryMenu->GetRuntimeData().itemList;
+            if (!itemList) {
+                return;
+            }
+
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!player) {
+                return;
+            }
+
+            itemList->Update(player);
         });
     }
 
@@ -2015,7 +2036,7 @@ namespace {
 
             if (a_event->menuName == RE::InventoryMenu::MENU_NAME.data()) {
                 if (a_event->opening) {
-                    QueueInventoryRefresh();
+                    QueueInventoryMenuOpenRefresh();
                 }
                 return RE::BSEventNotifyControl::kContinue;
             }

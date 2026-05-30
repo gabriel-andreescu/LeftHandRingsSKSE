@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- fix: properly refresh inventory ring equip markers on all runtimes
+
 ## 0.3.3 - 2026-05-29
 
 - fix: support Frostmoon rings on virtual fingers
